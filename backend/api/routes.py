@@ -1,0 +1,301 @@
+"""REST API Endpoints matching Section 14 of Requirements (SIH 26057)."""
+
+import logging
+from pathlib import Path
+from typing import List, Optional
+
+import torch
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse, Response
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.config import settings
+from backend.database import get_db
+from backend.models.schemas import (
+    BoundingBox,
+    CenterPoint,
+    DetectionItem,
+    DetectResponse,
+    HealthResponse,
+    ImageDetailsResponse,
+)
+from backend.services.detection_service import DetectionService, get_detection_service, get_detector
+from backend.services.storage_service import StorageService
+
+logger = logging.getLogger("APIRoutes")
+
+router = APIRouter()
+
+SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+
+
+@router.post(
+    "/detect",
+    response_model=DetectResponse,
+    summary="Upload side-scan sonar image and run real object detection",
+    description="Implements complete 12-stage pipeline: ingestion, modular preprocessing, YOLO inference, tight bbox generation, and SQLite persistence.",
+)
+async def detect_sonar(
+    file: UploadFile = File(..., description="Side-scan sonar image file (PNG, JPG, TIFF)"),
+    confidence_threshold: float = Query(
+        0.15, ge=0.05, le=0.95, description="Confidence score cutoff threshold"
+    ),
+    iou_threshold: float = Query(
+        0.45, ge=0.10, le=0.95, description="NMS IoU overlap threshold"
+    ),
+    enable_preprocessing: bool = Query(
+        True, description="Enable CLAHE and Bilateral acoustic filtering"
+    ),
+    db: AsyncSession = Depends(get_db),
+    service: DetectionService = Depends(get_detection_service),
+) -> DetectResponse:
+    """Handles sonar image upload and executes the detection pipeline."""
+    filename = file.filename or "sonar_upload.png"
+    ext = Path(filename).suffix.lower()
+
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported image extension '{ext}'. Supported formats: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+        )
+
+    try:
+        contents = await file.read()
+        if len(contents) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uploaded file is empty (0 bytes).",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to read upload stream: {str(e)}",
+        ) from e
+
+    try:
+        response = await service.execute_detection_pipeline(
+            image_bytes=contents,
+            filename=filename,
+            confidence_threshold=confidence_threshold,
+            iou_threshold=iou_threshold,
+            enable_preprocessing=enable_preprocessing,
+            session=db,
+        )
+        return response
+    except Exception as e:
+        logger.exception(f"Error during detection pipeline: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Detection pipeline failed: {str(e)}",
+        ) from e
+
+
+@router.get(
+    "/detections/{image_id}",
+    response_model=List[DetectionItem],
+    summary="Get structured detections for a specific sonar image",
+)
+async def get_detections_for_image(
+    image_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> List[DetectionItem]:
+    """Retrieves all detection records for an image from SQLite."""
+    records = await StorageService.get_detections_by_image(db, image_id)
+    if not records:
+        # Check if image exists
+        img = await StorageService.get_image_with_detections(db, image_id)
+        if not img:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Image ID '{image_id}' not found.",
+            )
+        return []
+
+    items = []
+    for idx, r in enumerate(records):
+        item = DetectionItem(
+            id=idx + 1,
+            class_name=r.class_name,
+            display_name=r.class_name.replace("_", " ").title(),
+            confidence=r.confidence,
+            bbox=BoundingBox(x=r.x, y=r.y, width=r.width, height=r.height),
+            center=CenterPoint(x=r.x + (r.width / 2.0), y=r.y + (r.height / 2.0)),
+            area=r.area,
+            anomaly_type="KNOWN_OBJECT" if r.confidence >= 0.35 else "UNCLASSIFIED_ANOMALY",
+        )
+        items.append(item)
+    return items
+
+
+@router.get(
+    "/images/{image_id}",
+    response_model=ImageDetailsResponse,
+    summary="Get metadata and detection summary for an image",
+)
+async def get_image_details(
+    image_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ImageDetailsResponse:
+    """Returns image metadata and list of detections."""
+    img = await StorageService.get_image_with_detections(db, image_id)
+    if not img:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Image ID '{image_id}' not found.",
+        )
+
+    det_items = [
+        DetectionItem(
+            id=idx + 1,
+            class_name=d.class_name,
+            display_name=d.class_name.replace("_", " ").title(),
+            confidence=d.confidence,
+            bbox=BoundingBox(x=d.x, y=d.y, width=d.width, height=d.height),
+            center=CenterPoint(x=d.x + (d.width / 2.0), y=d.y + (d.height / 2.0)),
+            area=d.area,
+            anomaly_type="KNOWN_OBJECT" if d.confidence >= 0.35 else "UNCLASSIFIED_ANOMALY",
+        )
+        for idx, d in enumerate(img.detections)
+    ]
+
+    return ImageDetailsResponse(
+        image_id=img.image_id,
+        original_filename=img.original_filename,
+        upload_timestamp=img.upload_timestamp,
+        image_width=img.image_width,
+        image_height=img.image_height,
+        original_url=f"/api/images/{img.image_id}/original",
+        processed_url=f"/api/images/{img.image_id}/enhanced",
+        annotated_url=f"/api/images/{img.image_id}/annotated",
+        total_detections=len(det_items),
+        detections=det_items,
+    )
+
+
+@router.get(
+    "/images/{image_id}/annotated",
+    summary="Download or view the annotated sonar image with bounding boxes",
+)
+async def get_annotated_image(
+    image_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serves the annotated image file from storage."""
+    img = await StorageService.get_image_with_detections(db, image_id)
+    if not img:
+        raise HTTPException(status_code=404, detail="Image not found")
+    path = Path(img.annotated_image_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Annotated image file not found on disk")
+    return FileResponse(path, media_type="image/png")
+
+
+@router.get(
+    "/images/{image_id}/original",
+    summary="Download or view the original uploaded sonar image",
+)
+async def get_original_image(
+    image_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serves the original sonar image file from storage."""
+    img = await StorageService.get_image_with_detections(db, image_id)
+    if not img:
+        raise HTTPException(status_code=404, detail="Image not found")
+    path = Path(img.original_image_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Original image file not found on disk")
+    return FileResponse(path, media_type="image/png")
+
+
+@router.get(
+    "/images/{image_id}/enhanced",
+    summary="Download or view the preprocessed enhanced sonar image",
+)
+async def get_enhanced_image(
+    image_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serves the preprocessed / CLAHE enhanced image file from storage."""
+    img = await StorageService.get_image_with_detections(db, image_id)
+    if not img:
+        raise HTTPException(status_code=404, detail="Image not found")
+    path = Path(img.processed_image_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Enhanced image file not found on disk")
+    return FileResponse(path, media_type="image/png")
+
+
+@router.get(
+    "/health",
+    response_model=HealthResponse,
+    summary="System and Model Health Check",
+)
+async def health_check() -> HealthResponse:
+    """Reports API status, PyTorch version, CUDA GPU acceleration, and active model."""
+    detector = get_detector()
+    cuda_avail = torch.cuda.is_available()
+    device_name = torch.cuda.get_device_name(0) if cuda_avail else "CPU"
+
+    return HealthResponse(
+        status="ok",
+        project=settings.PROJECT_NAME,
+        version=settings.VERSION,
+        pytorch_version=torch.__version__,
+        cuda_available=cuda_avail,
+        device_name=device_name,
+        model_version=detector.model_version,
+        model_summary=detector.model_summary,
+        is_sonar_trained=detector.is_sonar_trained,
+        classes_count=len(detector.class_taxonomy),
+        classes=detector.class_taxonomy,
+    )
+
+
+@router.get(
+    "/config",
+    summary="Retrieve class taxonomy and default threshold configurations",
+)
+async def get_system_config():
+    """Returns class names, color palettes, and default inference parameters."""
+    detector = get_detector()
+    return {
+        "classes": detector.class_taxonomy,
+        "display_names": detector.display_names,
+        "color_palette": detector.color_palette,
+        "inference_defaults": detector.inference_defaults,
+    }
+
+
+@router.get(
+    "/samples",
+    summary="List available sample sonar images",
+)
+async def list_samples():
+    """Returns paths and metadata of verified sonar sample images."""
+    samples = []
+    if settings.SAMPLES_DIR.exists():
+        for p in settings.SAMPLES_DIR.glob("*.*"):
+            if p.suffix.lower() in SUPPORTED_EXTENSIONS:
+                samples.append({
+                    "name": p.name,
+                    "filename": p.name,
+                    "size_bytes": p.stat().st_size,
+                    "url": f"/api/samples/{p.name}",
+                })
+    return samples
+
+
+@router.get(
+    "/samples/{filename}",
+    summary="Serve a sample sonar image",
+)
+async def get_sample_file(filename: str):
+    """Serves a specific sample sonar image."""
+    safe_name = Path(filename).name
+    p = settings.SAMPLES_DIR / safe_name
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Sample image not found")
+    return FileResponse(p, media_type="image/jpeg" if p.suffix.lower() in [".jpg", ".jpeg"] else "image/png")

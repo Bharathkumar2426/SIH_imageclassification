@@ -1,0 +1,36 @@
+# Python & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Frontend / Node
+frontend/node_modules/
+node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Database & Runtime Uploads
+*.db
+*.sqlite3
+data/uploads/*
+!data/uploads/.gitkeep
+
+# Operating System & Editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+# Training logs / caches
+*.cache

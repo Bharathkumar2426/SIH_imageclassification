@@ -1,0 +1,51 @@
+# SIH26057: Side-Scan Sonar Object Detection Class Taxonomy & Configuration
+# Single source of truth for sonar target categories, anomaly handling, and color palettes.
+
+taxonomy:
+  # Primary Debris & Anomaly Classes
+  classes:
+    0: "ghost_net"
+    1: "metal_drum"
+    2: "plastic_debris"
+    3: "sunken_wreckage"
+    4: "tire_wheel"
+    5: "metal_debris"
+    6: "container"
+    7: "pipe"
+    8: "bottle"
+    9: "unknown_debris"
+    10: "natural_anomaly"
+
+  # Clean Human-readable labels matching Image 1 format
+  display_names:
+    ghost_net: "Ghost Net"
+    metal_drum: "Metal Drum"
+    plastic_debris: "Plastic"
+    sunken_wreckage: "Wreckage"
+    tire_wheel: "Tire"
+    metal_debris: "Metal Debris"
+    container: "Container"
+    pipe: "Pipeline"
+    bottle: "Bottle"
+    unknown_debris: "Acoustic Anomaly"
+    natural_anomaly: "Seabed Feature"
+
+  # Sleek modern color palette (RGB / HEX in frontend, BGR in OpenCV)
+  color_palette:
+    plastic_debris: [52, 211, 153]         # Emerald green (matching Image 1)
+    bottle: [52, 211, 153]                 # Emerald green (matching Image 1)
+    ghost_net: [14, 165, 233]              # Cyan / Sky blue
+    sunken_wreckage: [56, 189, 248]        # Bright Sky blue
+    metal_drum: [245, 158, 11]             # Amber / Gold
+    metal_debris: [245, 158, 11]           # Amber
+    container: [168, 85, 247]              # Purple
+    tire_wheel: [148, 163, 184]            # Slate
+    unknown_debris: [161, 161, 170]        # Neutral
+    natural_anomaly: [132, 204, 22]        # Lime
+
+inference_defaults:
+  confidence_threshold: 0.25
+  iou_threshold: 0.40
+  image_size: 640
+  low_confidence_fallback: "unknown_debris"
+  low_confidence_threshold: 0.20
