@@ -96,7 +96,7 @@ class SonarDatasetAuditor:
                 # Try sibling resolution: images/{split}
                 img_dir = self.dataset_root / "images" / split_name
 
-            split_stats = {
+            split_stats: Dict[str, Any] = {
                 "images": 0,
                 "labels": 0,
                 "empty_labels": 0,
@@ -191,103 +191,268 @@ class SonarDatasetAuditor:
         return report
 
 
-def generate_synthetic_sonar_sample(
+def generate_multi_target_sonar_sample(
     width: int = 640,
     height: int = 640,
-    debris_type: str = "metal_debris",
+    min_targets: int = 2,
+    max_targets: int = 7,
     seed: Optional[int] = None,
 ) -> Tuple[np.ndarray, List[Tuple[int, float, float, float, float]]]:
-    """Generates a physics-realistic synthetic side-scan sonar image with acoustic shadows.
+    """Generates a physics-realistic multi-target side-scan sonar image with co-occurring debris.
     
-    Acoustic signatures implemented:
-    - Specular highlight: High backscatter peak reflecting off target
-    - Acoustic shadow: Low-backscatter occlusion trailing behind target along acoustic ray
-    - Seafloor reverberation: Gaussian speckle + low-frequency bottom ripples
+    Supports 10 ocean-based debris classes:
+      0: ghost_net
+      1: metal_drum
+      2: plastic_debris
+      3: sunken_wreckage
+      4: tire_wheel
+      5: pipe_pipeline
+      6: container_crate
+      7: anchor_chain
+      8: wood_debris
+      9: rock_boulder
     """
     if seed is not None:
         np.random.seed(seed)
         random.seed(seed)
 
-    # 1. Base seafloor with acoustic reverberation & ripples
+    # 1. Base seafloor with acoustic reverberation, slant illumination & ripples
     canvas = np.zeros((height, width), dtype=np.float32)
     
-    # Slant range illumination gradient (brighter near nadir, falloff at far range)
-    x_coords = np.linspace(0, 1, width)
-    illumination = 35.0 + 20.0 * np.sin(x_coords * math.pi)
+    # Slant range illumination gradient (brighter near nadir, gradual acoustic attenuation)
+    nadir_pos = random.choice([0.0, 0.5, 1.0])
+    if nadir_pos == 0.5:
+        # Dual-sided towfish waterfall (port / starboard channels with nadir line in center)
+        dist_from_nadir = np.abs(np.linspace(-1, 1, width))
+        illumination = 28.0 + 32.0 * np.exp(-1.8 * dist_from_nadir)
+    else:
+        x_coords = np.linspace(0, 1, width)
+        illumination = 32.0 + 25.0 * np.sin(x_coords * math.pi * 0.8 + 0.2)
     canvas += illumination[np.newaxis, :]
 
-    # Seafloor sediment wave ripples
-    y_coords = np.linspace(0, 10 * math.pi, height)
-    ripples = 10.0 * np.sin(y_coords)[:, np.newaxis]
+    # Seafloor sediment wave ripples (variable wavelength & direction)
+    ripple_freq = random.uniform(4.0, 14.0)
+    ripple_angle = random.uniform(-0.3, 0.3)
+    y_grid, x_grid = np.mgrid[0:height, 0:width]
+    wave_coords = (y_grid * math.cos(ripple_angle) + x_grid * math.sin(ripple_angle)) * (ripple_freq * math.pi / height)
+    ripples = random.uniform(6.0, 14.0) * np.sin(wave_coords)
     canvas += ripples
 
-    # Acoustic speckle noise (Rayleigh-like distribution)
-    speckle = np.random.gamma(shape=2.0, scale=6.0, size=(height, width)).astype(np.float32)
+    # Acoustic speckle noise (Rayleigh-like Gamma distribution)
+    speckle = np.random.gamma(shape=2.2, scale=5.5, size=(height, width)).astype(np.float32)
     canvas += speckle
 
-    # Clip canvas to uint8 range
-    canvas = np.clip(canvas, 10, 240)
+    # Optional nadir water column band (near zero backscatter) in waterfall mode
+    if nadir_pos == 0.5 and random.random() < 0.65:
+        nadir_w = random.randint(12, 28)
+        cx_nadir = width // 2
+        canvas[:, max(0, cx_nadir - nadir_w // 2) : min(width, cx_nadir + nadir_w // 2)] = np.random.uniform(2.0, 10.0, size=(height, min(width, cx_nadir + nadir_w // 2) - max(0, cx_nadir - nadir_w // 2)))
 
-    # 2. Inject target highlight and trailing acoustic shadow
-    targets = []
-    
-    # Target size and coordinates
-    tw = random.randint(30, 75)
-    th = random.randint(25, 60)
-    tx = random.randint(100, width - 200)
-    ty = random.randint(100, height - 150)
+    # Acoustic propagation direction: 1 = left-to-right (shadow right), -1 = right-to-left (shadow left)
+    direction = random.choice([1, -1])
 
-    # Acoustic shadow length (dependent on object height and grazing angle)
-    shadow_len = int(tw * random.uniform(1.8, 3.2))
+    # 2. Multi-target injection (2 to 7 objects per image)
+    num_targets = random.randint(min_targets, max_targets)
+    targets: List[Tuple[int, float, float, float, float]] = []
+    placed_boxes: List[Tuple[int, int, int, int]] = []  # [x1, y1, x2, y2]
 
-    # Sound propagation assumed left-to-right or right-to-left
-    direction = random.choice([1, -1])  # 1 = shadow cast right, -1 = shadow cast left
+    # Target class weights ensuring balanced representation across ocean debris types
+    class_weights = [0.12, 0.14, 0.12, 0.09, 0.11, 0.09, 0.10, 0.08, 0.07, 0.08]
+    class_pool = list(range(10))
 
-    if direction == 1:
-        # Highlight on left, shadow on right
-        # Shadow void (near 0 backscatter)
-        sx1 = tx + tw
-        sx2 = min(width - 5, sx1 + shadow_len)
-        canvas[ty:ty+th, sx1:sx2] = np.random.uniform(2.0, 15.0, size=(th, sx2-sx1))
+    for _ in range(num_targets * 3):  # Attempt up to 3x attempts to place non-overlapping objects
+        if len(targets) >= num_targets:
+            break
 
-        # Specular highlight (strong reflection 220-255)
-        canvas[ty:ty+th, tx:tx+tw] = np.random.uniform(215.0, 255.0, size=(th, tw))
-    else:
-        # Highlight on right, shadow on left
-        sx2 = tx
-        sx1 = max(5, sx2 - shadow_len)
-        canvas[ty:ty+th, sx1:sx2] = np.random.uniform(2.0, 15.0, size=(th, sx2-sx1))
-        canvas[ty:ty+th, tx:tx+tw] = np.random.uniform(215.0, 255.0, size=(th, tw))
+        cid = random.choices(class_pool, weights=class_weights, k=1)[0]
 
-    # Map class name to ID
-    class_map = {
-        "metal_debris": 0, "plastic_debris": 1, "fishing_gear": 2,
-        "rope_or_net": 3, "container": 4, "pipe": 5, "tire": 6,
-        "vehicle_or_large_structure": 7, "wreckage": 8,
-        "unknown_debris": 9, "natural_anomaly": 10,
-    }
-    cid = class_map.get(debris_type, 0)
+        # Geometry & size tailored to ocean debris class
+        if cid == 0:  # ghost_net (irregular mesh/web)
+            tw = random.randint(45, 95)
+            th = random.randint(35, 80)
+            shadow_ratio = random.uniform(1.4, 2.2)
+        elif cid == 1:  # metal_drum (compact cylinder)
+            tw = random.randint(22, 50)
+            th = random.randint(20, 45)
+            shadow_ratio = random.uniform(2.0, 3.2)
+        elif cid == 2:  # plastic_debris (crates / containers)
+            tw = random.randint(25, 60)
+            th = random.randint(22, 55)
+            shadow_ratio = random.uniform(1.6, 2.4)
+        elif cid == 3:  # sunken_wreckage (large hull / airframe)
+            tw = random.randint(85, 180)
+            th = random.randint(55, 140)
+            shadow_ratio = random.uniform(1.8, 3.0)
+        elif cid == 4:  # tire_wheel (donut / circular)
+            tw = random.randint(22, 45)
+            th = random.randint(22, 45)
+            shadow_ratio = random.uniform(1.8, 2.8)
+        elif cid == 5:  # pipe_pipeline (elongated conduit)
+            tw = random.randint(70, 160)
+            th = random.randint(14, 30)
+            shadow_ratio = random.uniform(1.5, 2.2)
+        elif cid == 6:  # container_crate (sharp rectangular freight)
+            tw = random.randint(40, 85)
+            th = random.randint(30, 65)
+            shadow_ratio = random.uniform(2.0, 2.8)
+        elif cid == 7:  # anchor_chain (curved anchor / chain links)
+            tw = random.randint(30, 75)
+            th = random.randint(25, 60)
+            shadow_ratio = random.uniform(1.6, 2.5)
+        elif cid == 8:  # wood_debris (submerged timber log)
+            tw = random.randint(50, 120)
+            th = random.randint(16, 35)
+            shadow_ratio = random.uniform(1.5, 2.3)
+        else:  # rock_boulder (natural seabed mound)
+            tw = random.randint(28, 70)
+            th = random.randint(25, 65)
+            shadow_ratio = random.uniform(1.7, 2.5)
 
-    # Encompass target highlight + acoustic shadow in YOLO bbox
-    if direction == 1:
-        bx1 = tx
-        bx2 = min(width - 5, tx + tw + shadow_len)
-    else:
-        bx1 = max(5, tx - shadow_len)
-        bx2 = tx + tw
+        shadow_len = int(tw * shadow_ratio)
+        total_w = tw + shadow_len
+        if total_w >= width - 40:
+            shadow_len = max(15, width - 40 - tw)
 
-    by1 = ty
-    by2 = ty + th
 
-    # Convert to normalized YOLO coordinates: [cid, cx, cy, bw, bh]
-    cx = ((bx1 + bx2) / 2.0) / float(width)
-    cy = ((by1 + by2) / 2.0) / float(height)
-    bw = (bx2 - bx1) / float(width)
-    bh = (by2 - by1) / float(height)
+        # Coordinate bounds
+        if direction == 1:
+            max_tx = width - tw - shadow_len - 15
+            if max_tx <= 20:
+                continue
+            tx = random.randint(20, max_tx)
+            bx1 = tx
+            bx2 = min(width - 5, tx + tw + shadow_len)
+        else:
+            min_tx = shadow_len + 15
+            max_tx = width - tw - 20
+            if min_tx >= max_tx:
+                continue
+            tx = random.randint(min_tx, max_tx)
+            bx1 = max(5, tx - shadow_len)
+            bx2 = tx + tw
 
-    targets.append((cid, cx, cy, bw, bh))
+        if height - th - 20 <= 20:
+            continue
+        ty = random.randint(20, height - th - 20)
+        by1 = ty
+        by2 = ty + th
+
+
+        # Overlap check with already placed targets (keep 15px clearance)
+        overlaps = False
+        for px1, py1, px2, py2 in placed_boxes:
+            if not (bx2 + 15 < px1 or bx1 > px2 + 15 or by2 + 15 < py1 or by1 > py2 + 15):
+                overlaps = True
+                break
+
+        if overlaps:
+            continue
+
+        placed_boxes.append((bx1, by1, bx2, by2))
+
+        # Render acoustic shadow void (near-zero backscatter 0-16)
+        if direction == 1:
+            sx1, sx2 = tx + tw, min(width - 4, tx + tw + shadow_len)
+        else:
+            sx1, sx2 = max(4, tx - shadow_len), tx
+        
+        shadow_patch = np.random.uniform(2.0, 14.0, size=(th, max(1, sx2 - sx1)))
+        canvas[ty : ty + th, sx1 : sx2] = shadow_patch
+
+        # Render acoustic specular highlight based on debris material properties
+        if cid in (1, 6):  # Metal drum or container: high acoustic reflectivity
+            hl_patch = np.random.uniform(220.0, 255.0, size=(th, tw))
+        elif cid == 3:  # Sunken wreckage: complex internal acoustic ribs
+            hl_patch = np.random.uniform(210.0, 255.0, size=(th, tw))
+            # Carve dark interior voids
+            hl_patch[int(th * 0.3) : int(th * 0.7), int(tw * 0.3) : int(tw * 0.7)] = np.random.uniform(15.0, 45.0)
+        elif cid == 4:  # Tire: toroidal donut hollow
+            hl_patch = np.random.uniform(190.0, 240.0, size=(th, tw))
+            ch_y, ch_x = int(th * 0.35), int(tw * 0.35)
+            hl_patch[ch_y : th - ch_y, ch_x : tw - ch_x] = np.random.uniform(10.0, 30.0)
+        elif cid == 0:  # Ghost net: diffuse web-like fibrous backscatter
+            hl_patch = np.random.uniform(170.0, 225.0, size=(th, tw))
+        else:
+            hl_patch = np.random.uniform(185.0, 245.0, size=(th, tw))
+
+        canvas[ty : ty + th, tx : tx + tw] = hl_patch
+
+        # Normalized YOLO format: [cid, cx, cy, bw, bh]
+        cx = ((bx1 + bx2) / 2.0) / float(width)
+        cy = ((by1 + by2) / 2.0) / float(height)
+        bw = (bx2 - bx1) / float(width)
+        bh = (by2 - by1) / float(height)
+
+        targets.append((cid, round(cx, 6), round(cy, 6), round(bw, 6), round(bh, 6)))
 
     canvas_uint8 = np.clip(canvas, 0, 255).astype(np.uint8)
     bgr_img = cv2.cvtColor(canvas_uint8, cv2.COLOR_GRAY2BGR)
 
     return bgr_img, targets
+
+
+def build_multi_target_dataset(
+    dataset_root: str | Path = "data/dataset",
+    num_train: int = 180,
+    num_val: int = 40,
+    num_test: int = 25,
+    seed: int = 42,
+) -> Dict[str, Any]:
+    """Generates and verifies a multi-target ocean debris side-scan sonar dataset."""
+    root = Path(dataset_root)
+    random.seed(seed)
+    np.random.seed(seed)
+
+    splits = {
+        "train": num_train,
+        "val": num_val,
+        "test": num_test,
+    }
+
+    # Ensure clean directory structure
+    for split in splits:
+        (root / split / "images").mkdir(parents=True, exist_ok=True)
+        (root / split / "labels").mkdir(parents=True, exist_ok=True)
+
+    img_counter = 0
+
+    for split, count in splits.items():
+        img_dir = root / split / "images"
+        lbl_dir = root / split / "labels"
+
+        # Wipe previous generated files to prevent stale single-box annotations
+        for f in img_dir.glob("sonar_gen_*.png"):
+            f.unlink()
+        for f in lbl_dir.glob("sonar_gen_*.txt"):
+            f.unlink()
+
+        # Generate multi-target scans (with ~12% negative background scans for false-positive suppression)
+        for i in range(count):
+            img_counter += 1
+            is_background = (random.random() < 0.12)
+            if is_background:
+                img, targets = generate_multi_target_sonar_sample(min_targets=0, max_targets=0, seed=img_counter)
+                targets = []
+            else:
+                img, targets = generate_multi_target_sonar_sample(min_targets=2, max_targets=6, seed=img_counter)
+
+            file_stem = f"sonar_gen_{split}_{i:04d}"
+            img_path = img_dir / f"{file_stem}.png"
+            lbl_path = lbl_dir / f"{file_stem}.txt"
+
+            cv2.imwrite(str(img_path), img)
+
+            lines = [f"{t[0]} {t[1]:.6f} {t[2]:.6f} {t[3]:.6f} {t[4]:.6f}" for t in targets]
+            lbl_path.write_text("\n".join(lines), encoding="utf-8")
+
+    # Audit the updated dataset
+    yaml_path = root / "sonar_data.yaml"
+    auditor = SonarDatasetAuditor(yaml_path)
+    report = auditor.audit()
+    logger.info(f"Dataset generated and audited: {report['total_images']} images, classes={report['objects_per_class']}")
+    return report
+
+
+generate_synthetic_sonar_sample = generate_multi_target_sonar_sample
+
+

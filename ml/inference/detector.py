@@ -1,8 +1,12 @@
-"""Real YOLO Side-Scan Sonar Object Detection Module (SIH 26057).
+"""Real 2-Stage YOLO + Deep Feature Crop Sonar Object Detection Module (SIH 26057).
 
-Wraps Ultralytics YOLO with PyTorch, CUDA/CPU device auto-detection, coordinate
-rescaling from letterboxed space to original pixel space, configurable NMS/IoU,
-and individual tight target annotation rendering.
+Pipeline:
+1. Stage 1: YOLOv8 region proposal and candidate localization (with CUDA/CPU auto-detection).
+2. Stage 2: Deep feature extraction (EfficientNet-B0) with empirical prototype-distance OOD check.
+3. Class-agnostic NMS and coordinate de-letterboxing to native image pixels.
+4. Returns:
+   - class_name, confidence, bbox [x1, y1, x2, y2], anomaly_score, classification_source.
+   - top-3 predictions for transparent uncertainty.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import torch
 import yaml
 from ultralytics import YOLO
 
+from ml.classifiers.crop_classifier import SonarCropClassifier
 from ml.preprocessing.sonar_preprocessor import PreprocessedSonarStages, to_png_base64
 
 logger = logging.getLogger("SonarDetector")
@@ -25,24 +30,25 @@ DEFAULT_CLASSES_PATH = Path("ml/configs/sonar_classes.yaml")
 
 
 class SonarObjectDetector:
-    """Production YOLO Detector for Side-Scan Sonar Imagery."""
+    """Production 2-Stage Detector for Side-Scan Sonar Imagery."""
 
     def __init__(
         self,
         weights_path: Optional[str | Path] = None,
+        crop_classifier_path: Optional[str | Path] = "ml/weights/crop_classifier.pt",
         config_path: str | Path = DEFAULT_CLASSES_PATH,
-        default_conf: float = 0.25,
+        default_conf: float = 0.20,
         default_iou: float = 0.45,
     ):
         self.config_path = Path(config_path)
         self.default_conf = default_conf
         self.default_iou = default_iou
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        
+
         # Load taxonomy and palette from config
         self._load_config()
 
-        # Resolve weights path
+        # Resolve weights path (prioritizes improved sonar_v2.pt)
         self.weights_path = self._resolve_weights_path(weights_path)
         self.model: Optional[YOLO] = None
         self.is_loaded = False
@@ -50,17 +56,23 @@ class SonarObjectDetector:
         self.model_version = "unloaded"
         self.model_summary = "Initializing..."
 
-        # Load weights
+        # Load YOLO Stage 1
         self._load_model()
 
+        # Initialize Stage 2 Crop Classifier & OOD Prototype Rejection
+        self.crop_classifier = SonarCropClassifier(
+            weights_path=crop_classifier_path,
+            device=self.device,
+        )
+
     def _load_config(self) -> None:
-        """Loads class taxonomy and display properties from YAML."""
+        """Loads active taxonomy, display properties, and inference defaults."""
         if self.config_path.exists():
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     cfg = yaml.safe_load(f)
                 tax = cfg.get("taxonomy", {})
-                self.class_taxonomy = tax.get("classes", {})
+                self.class_taxonomy = tax.get("active_classes", tax.get("classes", {}))
                 self.display_names = tax.get("display_names", {})
                 self.color_palette = tax.get("color_palette", {})
                 self.inference_defaults = cfg.get("inference_defaults", {})
@@ -70,23 +82,31 @@ class SonarObjectDetector:
 
         # Fallback defaults
         self.class_taxonomy = {
-            0: "metal_debris", 1: "plastic_debris", 2: "fishing_gear",
-            3: "rope_or_net", 4: "container", 5: "pipe", 6: "tire",
-            7: "vehicle_or_large_structure", 8: "wreckage",
-            9: "unknown_debris", 10: "natural_anomaly",
+            0: "ghost_net", 1: "metal_drum", 2: "plastic_debris",
+            3: "sunken_wreckage", 4: "tire_wheel", 5: "pipe_pipeline",
+            6: "container_crate", 7: "anchor_chain", 8: "wood_debris",
+            9: "rock_boulder"
         }
-        self.display_names = {v: v.replace("_", " ").title() for v in self.class_taxonomy.values()}
+        self.display_names = {
+            "ghost_net": "Ghost Net", "metal_drum": "Metal Drum",
+            "plastic_debris": "Plastic Debris", "sunken_wreckage": "Shipwreck",
+            "tire_wheel": "Tire", "pipe_pipeline": "Pipeline",
+            "container_crate": "Container / Crate", "anchor_chain": "Anchor / Chain",
+            "wood_debris": "Wood Debris", "rock_boulder": "Rock Boulder",
+            "unknown_debris": "Unknown Debris", "unknown_anomaly": "Unknown Anomaly"
+        }
         self.color_palette = {}
-        self.inference_defaults = {"low_confidence_threshold": 0.35}
+        self.inference_defaults = {"confidence_threshold": 0.20, "iou_threshold": 0.45}
+
 
     def _resolve_weights_path(self, explicit_path: Optional[str | Path]) -> Path:
-        """Finds the most suitable model weights, prioritizing sonar-trained checkpoints."""
+        """Finds the most suitable model weights, prioritizing sonar_v2 then sonar_best."""
         candidates = []
         if explicit_path:
             candidates.append(Path(explicit_path))
 
-        # Standard project weights locations
         candidates.extend([
+            Path("ml/weights/sonar_v2.pt"),
             Path("ml/weights/sonar_best.pt"),
             Path("backend/models/sonar_best.pt"),
             Path("ml/weights/best.pt"),
@@ -97,23 +117,20 @@ class SonarObjectDetector:
             if p.exists():
                 return p
 
-        # Default target even if it doesn't yet exist
-        return Path("ml/weights/sonar_best.pt")
+        return Path("ml/weights/sonar_v2.pt")
 
     def _load_model(self) -> bool:
-        """Loads YOLO model and determines if it is sonar-trained or base architecture."""
+        """Loads YOLO model and determines if it is sonar-trained."""
         if not self.weights_path.exists():
-            # Try to load base yolov8n as fallback
             try:
                 logger.warning(
-                    f"Sonar weights not found at {self.weights_path}. Loading base architecture 'yolov8n.pt'..."
+                    f"Weights not found at {self.weights_path}. Loading base yolov8n.pt..."
                 )
                 self.model = YOLO("yolov8n.pt")
                 self.is_loaded = True
                 self.is_sonar_trained = False
-                self.model_version = "yolov8n-base-awaiting-sonar-training"
-                self.model_summary = "Base YOLOv8 (Awaiting Sonar Training Dataset Checkpoint)"
-                logger.info("Base YOLOv8 loaded successfully.")
+                self.model_version = "yolov8n-base"
+                self.model_summary = "Base YOLOv8 (Uncalibrated)"
                 return True
             except Exception as e:
                 logger.error(f"Failed to load base YOLO: {e}")
@@ -123,22 +140,19 @@ class SonarObjectDetector:
         try:
             self.model = YOLO(str(self.weights_path))
             self.is_loaded = True
-            
-            # Verify if this model is trained on sonar classes
+
             model_classes = self.model.names
             sonar_class_names = set(self.class_taxonomy.values())
             is_sonar = any(c in sonar_class_names for c in model_classes.values())
 
             self.is_sonar_trained = is_sonar
+            self.class_names = model_classes
             if is_sonar:
-                self.model_version = f"sonar_yolo_{self.weights_path.stem}"
-                self.model_summary = f"Verified Sonar Detector ({self.weights_path.name})"
-                # Update class names from model if trained
-                self.class_names = model_classes
+                self.model_version = f"sonar_{self.weights_path.stem}_2stage"
+                self.model_summary = f"Verified 2-Stage Sonar Detector ({self.weights_path.name})"
             else:
                 self.model_version = f"base_{self.weights_path.name}"
-                self.model_summary = f"Base Weights ({self.weights_path.name}) - Prototype Mode"
-                self.class_names = model_classes
+                self.model_summary = f"Base Weights ({self.weights_path.name})"
 
             logger.info(
                 f"Model loaded: {self.weights_path} (Device: {self.device}, Sonar-Trained: {self.is_sonar_trained})"
@@ -155,9 +169,9 @@ class SonarObjectDetector:
         confidence_threshold: Optional[float] = None,
         iou_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Runs real YOLO object detection and extracts individual target bounding boxes."""
+        """Runs 2-stage object detection: YOLO localization + crop feature OOD verification."""
         if not self.is_loaded or self.model is None:
-            raise RuntimeError("YOLO Sonar model is not loaded. Please verify model weights.")
+            raise RuntimeError("YOLO Sonar model is not loaded.")
 
         conf = confidence_threshold if confidence_threshold is not None else self.default_conf
         iou = iou_threshold if iou_threshold is not None else self.default_iou
@@ -166,19 +180,73 @@ class SonarObjectDetector:
         scale_r = stages.scale_ratio
         pad_w, pad_h = stages.pad_offsets
 
-        # Run model inference on preprocessed letterbox image
-        results = self.model.predict(
-            source=stages.model_input,
-            conf=conf,
-            iou=iou,
-            device=self.device,
-            verbose=False,
-        )
+        # Stage 1: Multi-scale candidate region proposals
+        # Propose from both model_input (standard letterbox) and enhanced_bgr (native aspect ratio)
+        # to ensure small acoustic highlights and non-square waterfall swaths are captured.
+        stage1_conf = max(0.012, min(conf, 0.035)) if (self.crop_classifier and self.crop_classifier.is_loaded) else max(0.015, conf * 0.5)
 
-        boxes = results[0].boxes
-        detections: List[Dict[str, Any]] = []
+        raw_candidates = []
 
-        # Prepare canvas for annotated output (drawn on enhanced image for maximum visibility)
+        # Proposal pass A: Direct enhanced image (preserves fine target resolution)
+        try:
+            res_direct = self.model.predict(
+                source=stages.enhanced_bgr,
+                conf=stage1_conf,
+                iou=iou,
+                device=self.device,
+                verbose=False,
+            )
+            for r in res_direct:
+                boxes = getattr(r, "boxes", None)
+                if boxes is not None:
+                    for b in boxes:
+                        x1, y1, x2, y2 = b.xyxy[0].tolist()
+                        raw_candidates.append({
+                            "xyxy_orig": [
+                                max(0, min(orig_w, int(round(x1)))),
+                                max(0, min(orig_h, int(round(y1)))),
+                                max(0, min(orig_w, int(round(x2)))),
+                                max(0, min(orig_h, int(round(y2)))),
+                            ],
+                            "conf": float(b.conf[0].item()),
+                            "cid": int(b.cls[0].item()),
+                        })
+                    break
+        except Exception as e:
+            logger.debug(f"Direct proposal pass notice: {e}")
+
+        # Proposal pass B: Letterbox input (catches full-scene contextual objects)
+        try:
+            res_lb = self.model.predict(
+                source=stages.model_input,
+                conf=stage1_conf,
+                iou=iou,
+                device=self.device,
+                verbose=False,
+            )
+            for r in res_lb:
+                boxes = getattr(r, "boxes", None)
+                if boxes is not None:
+                    for b in boxes:
+                        x1_lb, y1_lb, x2_lb, y2_lb = b.xyxy[0].tolist()
+                        x1_orig = (x1_lb - pad_w) / scale_r
+                        y1_orig = (y1_lb - pad_h) / scale_r
+                        x2_orig = (x2_lb - pad_w) / scale_r
+                        y2_orig = (y2_lb - pad_h) / scale_r
+                        raw_candidates.append({
+                            "xyxy_orig": [
+                                max(0, min(orig_w, int(round(x1_orig)))),
+                                max(0, min(orig_h, int(round(y1_orig)))),
+                                max(0, min(orig_w, int(round(x2_orig)))),
+                                max(0, min(orig_h, int(round(y2_orig)))),
+                            ],
+                            "conf": float(b.conf[0].item()),
+                            "cid": int(b.cls[0].item()),
+                        })
+                    break
+        except Exception as e:
+            logger.debug(f"Letterbox proposal pass notice: {e}")
+
         annotated_canvas = stages.enhanced_bgr.copy()
 
         palette_defaults = [
@@ -187,29 +255,18 @@ class SonarObjectDetector:
             (245, 158, 11),   # Amber
             (239, 68, 68),    # Rose
             (168, 85, 247),   # Purple
-            (14, 165, 233),   # Cyan
+            (234, 179, 8),    # Yellow
+            (20, 184, 166),   # Teal
+            (249, 115, 22),   # Orange
+            (180, 83, 9),     # Bronze
+            (132, 204, 22),   # Lime
         ]
 
-        low_conf_thresh = self.inference_defaults.get("low_confidence_threshold", 0.35)
+        # Sort all candidates by confidence descending
+        raw_candidates.sort(key=lambda x: x["conf"], reverse=True)
 
-        # Class-agnostic NMS to prevent duplicate overlapping boxes on the same target
-        keep_boxes = []
-        raw_boxes_list = []
-        for box in boxes:
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            conf_val = float(box.conf[0].item())
-            cid_val = int(box.cls[0].item())
-            raw_boxes_list.append({
-                "box": box,
-                "xyxy": [x1, y1, x2, y2],
-                "conf": conf_val,
-                "cid": cid_val
-            })
-
-        # Sort by confidence descending
-        raw_boxes_list.sort(key=lambda x: x["conf"], reverse=True)
-
-        def is_duplicate_box(b1, b2, iou_thresh):
+        # Standard IoU NMS in native coordinates (eliminates duplicates without killing neighboring debris)
+        def is_duplicate(b1, b2, iou_thresh):
             xa = max(b1[0], b2[0])
             ya = max(b1[1], b2[1])
             xb = min(b1[2], b2[2])
@@ -221,50 +278,25 @@ class SonarObjectDetector:
             area2 = (b2[2] - b2[0]) * (b2[3] - b2[1])
             union = area1 + area2 - inter
             iou_score = inter / union if union > 0 else 0
-            ios_score = inter / min(area1, area2) if min(area1, area2) > 0 else 0
-            return iou_score > iou_thresh or ios_score > 0.35
+            return iou_score > iou_thresh
 
         filtered_boxes = []
-        for item in raw_boxes_list:
+        for item in raw_candidates:
             overlap = False
             for kept in filtered_boxes:
-                if is_duplicate_box(item["xyxy"], kept["xyxy"], iou):
+                if is_duplicate(item["xyxy_orig"], kept["xyxy_orig"], iou):
                     overlap = True
                     break
             if not overlap:
                 filtered_boxes.append(item)
 
+        detections: List[Dict[str, Any]] = []
+
         for idx, item in enumerate(filtered_boxes):
-            box = item["box"]
             cid = item["cid"]
-            score = item["conf"]
+            stage1_conf_val = item["conf"]
+            x1, y1, x2, y2 = item["xyxy_orig"]
 
-            # Get class name directly from active model
-            if hasattr(self, "class_names") and cid in self.class_names:
-                raw_cname = self.class_names[cid]
-            elif hasattr(self.model, "names") and cid in self.model.names:
-                raw_cname = self.model.names[cid]
-            else:
-                raw_cname = self.class_taxonomy.get(cid, f"debris_{cid}")
-
-            # Recognize specific debris type cleanly matching Image 1
-            display_name = self.display_names.get(raw_cname, raw_cname.replace("_", " ").title())
-            cname = raw_cname
-            anomaly_type = "KNOWN_OBJECT"
-
-            # Unscale coordinates from letterbox back to original image coordinates
-            x1_lb, y1_lb, x2_lb, y2_lb = item["xyxy"]
-
-            x1_orig = (x1_lb - pad_w) / scale_r
-            y1_orig = (y1_lb - pad_h) / scale_r
-            x2_orig = (x2_lb - pad_w) / scale_r
-            y2_orig = (y2_lb - pad_h) / scale_r
-
-            # Clamp coordinates to original image bounds
-            x1 = max(0, min(orig_w, int(round(x1_orig))))
-            y1 = max(0, min(orig_h, int(round(y1_orig))))
-            x2 = max(0, min(orig_w, int(round(x2_orig))))
-            y2 = max(0, min(orig_h, int(round(y2_orig))))
 
             bw = max(1, x2 - x1)
             bh = max(1, y2 - y1)
@@ -272,13 +304,78 @@ class SonarObjectDetector:
             cx = round(x1 + (bw / 2.0), 1)
             cy = round(y1 + (bh / 2.0), 1)
 
+            # Stage 2: Extract target crop with 10% context padding for shadow evaluation
+            pad_cx = int(bw * 0.10)
+            pad_cy = int(bh * 0.10)
+            crop_x1 = max(0, x1 - pad_cx)
+            crop_y1 = max(0, y1 - pad_cy)
+            crop_x2 = min(orig_w, x2 + pad_cx)
+            crop_y2 = min(orig_h, y2 + pad_cy)
+
+            # Extract from original_bgr to preserve natural acoustic distribution
+            crop_region = stages.original_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
+
+            # Resolve Stage 1 class name and display name
+            raw_cname = self.class_names.get(cid, self.class_taxonomy.get(cid, f"debris_{cid}"))
+            yolo_cname = raw_cname
+            yolo_display = self.display_names.get(raw_cname, raw_cname.replace("_", " ").title())
+
+            # Stage 2 Deep Crop Classification & Empirical OOD Check
+            if self.crop_classifier and self.crop_classifier.is_loaded and crop_region.size > 0:
+                stage2_res = self.crop_classifier.classify_crop(crop_region)
+                stage2_cname = stage2_res["class_name"]
+                stage2_conf = stage2_res["confidence"]
+                anomaly_score = stage2_res["anomaly_score"]
+                source = stage2_res["classification_source"]
+                top_3 = stage2_res.get("top_3", [])
+
+                # Intelligent Classification Fusion:
+                # 1. Never allow OOD distance to falsely overwrite a confident YOLO ocean debris detection into "unknown_debris"
+                if stage2_cname in ("unknown_debris", "unknown_anomaly"):
+                    if stage1_conf_val >= 0.18:
+                        class_name = yolo_cname
+                        display_name = yolo_display
+                        final_conf = round(float(stage1_conf_val), 3)
+                        source = "detector_fused"
+                        anomaly_score = round(float(np.clip(1.0 - stage1_conf_val, 0.05, 0.40)), 3)
+                    else:
+                        class_name = stage2_cname
+                        display_name = stage2_res["display_name"]
+                        final_conf = round(float(max(stage1_conf_val, stage2_conf)), 3)
+                else:
+                    # Stage 2 predicted a recognized active ocean debris class
+                    if stage2_conf >= stage1_conf_val:
+                        class_name = stage2_cname
+                        display_name = stage2_res["display_name"]
+                        final_conf = round(float(stage2_conf), 3)
+                    else:
+                        class_name = yolo_cname
+                        display_name = yolo_display
+                        final_conf = round(float(stage1_conf_val), 3)
+            else:
+                class_name = yolo_cname
+                display_name = yolo_display
+                final_conf = round(stage1_conf_val, 3)
+                anomaly_score = round(float(np.clip(1.0 - stage1_conf_val, 0.0, 1.0)), 3)
+                source = "detector"
+                top_3 = []
+
+
+            # Filter candidate detections by final calibrated confidence threshold
+            if final_conf < conf:
+                continue
+
+            # Determine anomaly classification
+            anomaly_type = "KNOWN_OBJECT" if anomaly_score < 0.50 else "UNCLASSIFIED_ANOMALY"
+
             det_item = {
                 "id": idx + 1,
-                "class": cname,
+                "class_name": class_name,
+                "class": class_name,
                 "display_name": display_name,
-                "class_id": cid,
-                "confidence": round(score, 4),
-                "bbox": {
+                "confidence": final_conf,
+                "bbox": [x1, y1, x2, y2],
+                "bbox_coords": {
                     "x": x1,
                     "y": y1,
                     "width": bw,
@@ -289,52 +386,33 @@ class SonarObjectDetector:
                     "y": cy,
                 },
                 "area": area,
+                "anomaly_score": anomaly_score,
+                "classification_source": source,
                 "anomaly_type": anomaly_type,
+                "top_3": top_3,
             }
             detections.append(det_item)
 
-            # Get color for rendering
-            if cname in self.color_palette:
-                color = tuple(self.color_palette[cname])
-            else:
-                color = palette_defaults[cid % len(palette_defaults)]
+            # Draw HUD overlay with class color (convert RGB config to BGR for OpenCV)
+            fallback_col = palette_defaults[cid % len(palette_defaults)]
+            chosen_col = self.color_palette.get(class_name)
+            rgb_col = chosen_col if (isinstance(chosen_col, (list, tuple)) and len(chosen_col) >= 3) else fallback_col
+            color_bgr = (int(rgb_col[2]), int(rgb_col[1]), int(rgb_col[0]))
+            thickness = max(2, round(min(orig_w, orig_h) / 350.0))
+            cv2.rectangle(annotated_canvas, (x1, y1), (x2, y2), color_bgr, thickness)
 
-            # Section 8: Bounding Box Quality - Draw tight bounding box
-            thickness = max(2, int(round(min(orig_w, orig_h) / 300.0)))
-            cv2.rectangle(annotated_canvas, (x1, y1), (x2, y2), color, thickness)
+            # Label banner: <class_name> <conf> (e.g. metal_drum 0.91)
+            label_text = f"{class_name} {final_conf:.2f}"
+            font_scale = max(0.44, min(orig_w, orig_h) / 1000.0)
+            (text_w, text_h), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
 
-            # Draw acoustic center crosshair / dot
-            cv2.circle(annotated_canvas, (int(cx), int(cy)), max(3, thickness), (0, 255, 128), -1)
-
-            # Draw label banner matching Image 1: <Type> — <Confidence>%
-            label_text = f"{display_name} — {int(round(score * 100))}%"
-            font_scale = max(0.45, min(orig_w, orig_h) / 1100.0)
-            (text_w, text_h), baseline = cv2.getTextSize(
-                label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1
-            )
-
-            # Banner background rectangle with dark pill backing
-            banner_y1 = max(0, y1 - text_h - 10)
+            banner_y1 = max(0, y1 - text_h - 8)
             banner_y2 = y1
-            cv2.rectangle(
-                annotated_canvas,
-                (x1, banner_y1),
-                (x1 + text_w + 12, banner_y2),
-                (6, 78, 59),  # Dark emerald/teal backing
-                -1,
-            )
-            cv2.rectangle(
-                annotated_canvas,
-                (x1, banner_y1),
-                (x1 + text_w + 12, banner_y2),
-                color,  # Border matching class
-                1,
-            )
-            # Text label in crisp white
+            cv2.rectangle(annotated_canvas, (x1, banner_y1), (x1 + text_w + 10, banner_y2), color_bgr, -1)
             cv2.putText(
                 annotated_canvas,
                 label_text,
-                (x1 + 6, banner_y2 - 5),
+                (x1 + 5, banner_y2 - 4),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 font_scale,
                 (255, 255, 255),
@@ -357,5 +435,7 @@ class SonarObjectDetector:
                 "device": self.device,
                 "confidence_threshold": conf,
                 "iou_threshold": iou,
+                "second_stage_active": bool(self.crop_classifier and self.crop_classifier.is_loaded),
+                "tau_ood": getattr(self.crop_classifier, "tau_ood", None),
             },
         }

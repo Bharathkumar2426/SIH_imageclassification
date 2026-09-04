@@ -124,7 +124,22 @@ export function SonarUploader({ onFileSelected, selectedFile, isDetecting }) {
           </span>
           {loadingSample && <span className="text-cyan-400 animate-pulse">Loading sample...</span>}
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <button
+            type="button"
+            disabled={isDetecting || loadingSample}
+            onClick={() => handleSampleClick('sample_sonar_image6.jpg')}
+            className="flex items-center justify-between px-3 py-2 rounded-lg bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-700/60 text-left transition disabled:opacity-50"
+          >
+            <div>
+              <div className="text-xs font-bold text-cyan-300">Target Benchmark (6 Debris)</div>
+              <div className="text-[11px] font-mono text-slate-400">1024x2048 • Full Multi-Target Sonar</div>
+            </div>
+            <span className="text-xs font-mono text-cyan-300 font-bold px-2 py-0.5 rounded bg-cyan-900 border border-cyan-600">
+              Load
+            </span>
+          </button>
+
           <button
             type="button"
             disabled={isDetecting || loadingSample}
@@ -148,7 +163,7 @@ export function SonarUploader({ onFileSelected, selectedFile, isDetecting }) {
           >
             <div>
               <div className="text-xs font-semibold text-slate-200">High-Res Seabed Swath</div>
-              <div className="text-[11px] font-mono text-slate-400">1024x1024 • Debris field & acoustic ripples</div>
+              <div className="text-[11px] font-mono text-slate-400">1024x1024 • Debris field & ripples</div>
             </div>
             <span className="text-xs font-mono text-cyan-400 px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800">
               Load

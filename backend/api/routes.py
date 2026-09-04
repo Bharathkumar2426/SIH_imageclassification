@@ -3,10 +3,13 @@
 import logging
 from pathlib import Path
 from typing import List, Optional
-
+# pyrefly: ignore [missing-import]
 import torch
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+# pyrefly: ignore [missing-import]
 from fastapi.responses import FileResponse, Response
+# pyrefly: ignore [missing-import]
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
@@ -33,12 +36,12 @@ SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
     "/detect",
     response_model=DetectResponse,
     summary="Upload side-scan sonar image and run real object detection",
-    description="Implements complete 12-stage pipeline: ingestion, modular preprocessing, YOLO inference, tight bbox generation, and SQLite persistence.",
+    description="Implements complete 12-stage pipeline: ingestion, modular preprocessing, 2-stage YOLO + crop inference, and SQLite persistence.",
 )
 async def detect_sonar(
     file: UploadFile = File(..., description="Side-scan sonar image file (PNG, JPG, TIFF)"),
     confidence_threshold: float = Query(
-        0.15, ge=0.05, le=0.95, description="Confidence score cutoff threshold"
+        0.20, ge=0.05, le=0.95, description="Confidence score cutoff threshold (empirically tuned)"
     ),
     iou_threshold: float = Query(
         0.45, ge=0.10, le=0.95, description="NMS IoU overlap threshold"
@@ -104,7 +107,6 @@ async def get_detections_for_image(
     """Retrieves all detection records for an image from SQLite."""
     records = await StorageService.get_detections_by_image(db, image_id)
     if not records:
-        # Check if image exists
         img = await StorageService.get_image_with_detections(db, image_id)
         if not img:
             raise HTTPException(
@@ -115,15 +117,23 @@ async def get_detections_for_image(
 
     items = []
     for idx, r in enumerate(records):
+        bx, by = r.x, r.y
+        bw, bh = max(1, r.width), max(1, r.height)
+        anom_score = float(getattr(r, "anomaly_score", 0.0) or 0.0)
+        src = str(getattr(r, "classification_source", "detector") or "detector")
+
         item = DetectionItem(
             id=idx + 1,
             class_name=r.class_name,
             display_name=r.class_name.replace("_", " ").title(),
             confidence=r.confidence,
-            bbox=BoundingBox(x=r.x, y=r.y, width=r.width, height=r.height),
-            center=CenterPoint(x=r.x + (r.width / 2.0), y=r.y + (r.height / 2.0)),
+            bbox=[bx, by, bx + bw, by + bh],
+            bbox_coords=BoundingBox(x=bx, y=by, width=bw, height=bh),
+            center=CenterPoint(x=bx + (bw / 2.0), y=by + (bh / 2.0)),
             area=r.area,
-            anomaly_type="KNOWN_OBJECT" if r.confidence >= 0.35 else "UNCLASSIFIED_ANOMALY",
+            anomaly_score=anom_score,
+            classification_source=src,
+            anomaly_type="KNOWN_OBJECT" if anom_score < 0.50 else "UNCLASSIFIED_ANOMALY",
         )
         items.append(item)
     return items
@@ -146,19 +156,27 @@ async def get_image_details(
             detail=f"Image ID '{image_id}' not found.",
         )
 
-    det_items = [
-        DetectionItem(
+    det_items = []
+    for idx, d in enumerate(img.detections):
+        bx, by = d.x, d.y
+        bw, bh = max(1, d.width), max(1, d.height)
+        anom_score = float(getattr(d, "anomaly_score", 0.0) or 0.0)
+        src = str(getattr(d, "classification_source", "detector") or "detector")
+
+        item = DetectionItem(
             id=idx + 1,
             class_name=d.class_name,
             display_name=d.class_name.replace("_", " ").title(),
             confidence=d.confidence,
-            bbox=BoundingBox(x=d.x, y=d.y, width=d.width, height=d.height),
-            center=CenterPoint(x=d.x + (d.width / 2.0), y=d.y + (d.height / 2.0)),
+            bbox=[bx, by, bx + bw, by + bh],
+            bbox_coords=BoundingBox(x=bx, y=by, width=bw, height=bh),
+            center=CenterPoint(x=bx + (bw / 2.0), y=by + (bh / 2.0)),
             area=d.area,
-            anomaly_type="KNOWN_OBJECT" if d.confidence >= 0.35 else "UNCLASSIFIED_ANOMALY",
+            anomaly_score=anom_score,
+            classification_source=src,
+            anomaly_type="KNOWN_OBJECT" if anom_score < 0.50 else "UNCLASSIFIED_ANOMALY",
         )
-        for idx, d in enumerate(img.detections)
-    ]
+        det_items.append(item)
 
     return ImageDetailsResponse(
         image_id=img.image_id,
@@ -238,6 +256,7 @@ async def health_check() -> HealthResponse:
     detector = get_detector()
     cuda_avail = torch.cuda.is_available()
     device_name = torch.cuda.get_device_name(0) if cuda_avail else "CPU"
+    second_stage_active = bool(detector.crop_classifier and detector.crop_classifier.is_loaded)
 
     return HealthResponse(
         status="ok",
@@ -249,8 +268,9 @@ async def health_check() -> HealthResponse:
         model_version=detector.model_version,
         model_summary=detector.model_summary,
         is_sonar_trained=detector.is_sonar_trained,
+        second_stage_active=second_stage_active,
         classes_count=len(detector.class_taxonomy),
-        classes=detector.class_taxonomy,
+        classes={str(k): str(v) for k, v in detector.class_taxonomy.items()},
     )
 
 

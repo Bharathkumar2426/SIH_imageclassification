@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.models.db_models import ImageRecord, DetectionRecord
-from backend.models.schemas import DetectionItem, BoundingBox, CenterPoint
 
 
 class StorageService:
@@ -47,21 +46,32 @@ class StorageService:
         detections: List[dict],
         model_version: str,
     ) -> List[DetectionRecord]:
-        """Persists individual target bounding boxes and confidences into detections table."""
+        """Persists individual target bounding boxes, confidences, and anomaly scores."""
         records = []
         now = datetime.now(timezone.utc)
         for det in detections:
             bbox = det["bbox"]
+            if isinstance(bbox, list):
+                x1, y1, x2, y2 = bbox
+                bx, by = int(x1), int(y1)
+                bw, bh = max(1, int(x2 - x1)), max(1, int(y2 - y1))
+            else:
+                bx, by = int(bbox["x"]), int(bbox["y"])
+                bw, bh = max(1, int(bbox["width"])), max(1, int(bbox["height"]))
+
+            cname = det.get("class_name", det.get("class", "unknown_debris"))
             rec = DetectionRecord(
                 image_id=image_id,
-                class_name=det["class"],
+                class_name=cname,
                 confidence=float(det["confidence"]),
-                x=int(bbox["x"]),
-                y=int(bbox["y"]),
-                width=int(bbox["width"]),
-                height=int(bbox["height"]),
-                area=int(det["area"]),
+                x=bx,
+                y=by,
+                width=bw,
+                height=bh,
+                area=int(det.get("area", bw * bh)),
                 model_version=model_version,
+                anomaly_score=float(det.get("anomaly_score", 0.0)),
+                classification_source=str(det.get("classification_source", "detector")),
                 inference_timestamp=now,
             )
             session.add(rec)

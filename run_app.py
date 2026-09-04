@@ -8,10 +8,12 @@ import sys
 import time
 from pathlib import Path
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+stdout_reconfig = getattr(sys.stdout, "reconfigure", None)
+if callable(stdout_reconfig):
+    stdout_reconfig(encoding="utf-8", errors="replace")
+stderr_reconfig = getattr(sys.stderr, "reconfigure", None)
+if callable(stderr_reconfig):
+    stderr_reconfig(encoding="utf-8", errors="replace")
 
 ROOT_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = ROOT_DIR / "frontend"

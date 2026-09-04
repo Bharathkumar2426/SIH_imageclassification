@@ -1,4 +1,4 @@
-# Python & Environments
+# Python & Virtual Environments
 __pycache__/
 *.py[cod]
 *$py.class
@@ -10,8 +10,10 @@ ENV/
 *.egg-info/
 dist/
 build/
+.ruff_cache/
+.pytest_cache/
 
-# Frontend / Node
+# Frontend & Node Dependencies
 frontend/node_modules/
 node_modules/
 frontend/dist/
@@ -25,12 +27,27 @@ yarn-error.log*
 data/uploads/*
 !data/uploads/.gitkeep
 
-# Operating System & Editors
+# Operating System & IDEs
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 *.log
 
-# Training logs / caches
+# Training Artifacts & Experiment Runs
+runs/
+**/runs/
 *.cache
+ml/evaluation_results/*.png
+
+# Heavy Datasets (Keep data/samples/ for testing)
+data/dataset/
+
+# Model Weights & Checkpoints
+*.pt
+*.pth
+*.onnx
+*.bin
+
+# Temporary / Scratch Files
+scratch_*.py
