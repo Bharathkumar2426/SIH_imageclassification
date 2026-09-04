@@ -1,7 +1,10 @@
 """SQLAlchemy ORM Models matching Section 13 of Requirements (SIH 26057)."""
 
 from datetime import datetime, timezone
+from typing import Optional
+# pyrefly: ignore [missing-import]
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
@@ -11,7 +14,6 @@ class ImageRecord(Base):
     """Stores side-scan sonar image upload and path metadata."""
     __tablename__ = "images"
 
-    # Schema strictly adhering to Section 13
     image_id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     upload_timestamp: Mapped[datetime] = mapped_column(
@@ -25,7 +27,6 @@ class ImageRecord(Base):
     image_width: Mapped[int] = mapped_column(Integer, nullable=False)
     image_height: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # One-to-many relationship with detections
     detections: Mapped[list["DetectionRecord"]] = relationship(
         "DetectionRecord",
         back_populates="image",
@@ -37,7 +38,6 @@ class DetectionRecord(Base):
     """Stores individual target detection records matching Section 13."""
     __tablename__ = "detections"
 
-    # Schema strictly adhering to Section 13
     detection_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     image_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("images.image_id", ondelete="CASCADE"), index=True, nullable=False
@@ -50,11 +50,12 @@ class DetectionRecord(Base):
     height: Mapped[int] = mapped_column(Integer, nullable=False)
     area: Mapped[int] = mapped_column(Integer, nullable=False)
     model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    anomaly_score: Mapped[Optional[float]] = mapped_column(Float, default=0.0, nullable=True)
+    classification_source: Mapped[Optional[str]] = mapped_column(String(32), default="detector", nullable=True)
     inference_timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
 
-    # Relationship back to ImageRecord
     image: Mapped["ImageRecord"] = relationship("ImageRecord", back_populates="detections")

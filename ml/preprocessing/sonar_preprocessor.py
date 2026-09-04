@@ -223,8 +223,8 @@ class SonarPreprocessor:
             denoised_img = self.reduce_sonar_noise(clahe_img)
             denoised_bgr = cv2.cvtColor(denoised_img, cv2.COLOR_GRAY2BGR)
 
-        # 6. Aspect-preserving letterbox for YOLO
-        model_input, r, (dw, dh) = self.letterbox(denoised_bgr, new_shape=self.target_size)
+        # 6. Aspect-preserving letterbox for YOLO (using high-fidelity original image so acoustic shadow gradients are preserved)
+        model_input, r, (dw, dh) = self.letterbox(original_bgr, new_shape=self.target_size)
 
         # 7. Generate Base64 representations for UI comparison
         stages_b64 = {

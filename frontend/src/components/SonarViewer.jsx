@@ -51,13 +51,12 @@ export function SonarViewer({
   } else if (activeView === 'denoised' && stageImages.denoised) {
     currentImgSrc = stageImages.denoised;
   } else if (activeView === 'annotated') {
-    // Show clean contrast-enhanced sonar with vector SVG overlay for pixel-perfect Image 1 aesthetic
     currentImgSrc = stageImages.enhanced || stageImages.original || stageImages.annotated;
   }
 
   // Pan handlers
   const handleMouseDown = (e) => {
-    if (e.button !== 0) return; // Left click only
+    if (e.button !== 0) return;
     setIsDragging(true);
     setDragStart({ x: e.clientX - position.x, y: e.clientY - position.y });
   };
@@ -124,50 +123,51 @@ export function SonarViewer({
                 : 'text-slate-300 hover:text-white'
             }`}
           >
-            3. Denoised (Bilateral)
+            3. Denoised
           </button>
           <button
             onClick={() => setActiveView('annotated')}
-            className={`px-3 py-1 rounded text-xs font-medium transition ${
+            className={`px-3 py-1 rounded text-xs font-medium transition flex items-center space-x-1.5 ${
               activeView === 'annotated'
                 ? 'bg-cyan-500 text-black font-semibold shadow-sm'
                 : 'text-slate-300 hover:text-white'
             }`}
           >
-            4. Detection Result
+            <Target className="w-3.5 h-3.5" />
+            <span>4. Detected Targets ({detections.length})</span>
           </button>
         </div>
 
-        {/* Zoom & Pan Controls */}
-        <div className="flex items-center space-x-2 text-xs font-mono">
-          <span className="text-slate-400 px-2 py-0.5 rounded bg-ocean-900 border border-ocean-800">
+        {/* Pan / Zoom Actions */}
+        <div className="flex items-center space-x-1 bg-ocean-900 px-2 py-1 rounded-lg border border-ocean-750 text-slate-300 text-xs font-mono">
+          <button
+            onClick={() => setScale((s) => Math.max(0.5, s - 0.25))}
+            className="p-1 hover:text-white hover:bg-ocean-800 rounded transition"
+            title="Zoom Out"
+          >
+            <ZoomOut className="w-4 h-4" />
+          </button>
+          <span className="px-1.5 font-bold text-cyan-400">
             {Math.round(scale * 100)}%
           </span>
           <button
-            onClick={() => setScale((s) => Math.min(6.0, s * 1.2))}
+            onClick={() => setScale((s) => Math.min(6.0, s + 0.25))}
+            className="p-1 hover:text-white hover:bg-ocean-800 rounded transition"
             title="Zoom In"
-            className="p-1.5 rounded bg-ocean-800 hover:bg-ocean-750 text-slate-200 border border-ocean-700"
           >
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setScale((s) => Math.max(0.5, s / 1.2))}
-            title="Zoom Out"
-            className="p-1.5 rounded bg-ocean-800 hover:bg-ocean-750 text-slate-200 border border-ocean-700"
-          >
-            <ZoomOut className="w-3.5 h-3.5" />
+            <ZoomIn className="w-4 h-4" />
           </button>
           <button
             onClick={handleResetZoom}
-            title="Reset Pan & Zoom"
-            className="p-1.5 rounded bg-ocean-800 hover:bg-ocean-750 text-slate-200 border border-ocean-700"
+            className="p-1 hover:text-white hover:bg-ocean-800 rounded transition ml-1"
+            title="Reset Zoom & Pan"
           >
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Main Interactive Canvas */}
+      {/* Main Canvas Viewport */}
       <div
         ref={containerRef}
         onMouseDown={handleMouseDown}
@@ -175,12 +175,10 @@ export function SonarViewer({
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
         onWheel={handleWheel}
-        className="relative flex-1 min-h-[460px] max-h-[580px] bg-[#02050b] overflow-hidden cursor-grab active:cursor-grabbing flex items-center justify-center select-none"
+        className={`relative w-full h-[540px] bg-slate-950 overflow-hidden flex items-center justify-center select-none ${
+          isDragging ? 'cursor-grabbing' : 'cursor-grab'
+        }`}
       >
-        {/* Subtle Scanlines effect overlay */}
-        <div className="absolute inset-0 sonar-scanlines z-10 pointer-events-none" />
-
-        {/* Viewport content */}
         <div
           style={{
             transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
@@ -189,10 +187,9 @@ export function SonarViewer({
           }}
           className="relative inline-block"
         >
-          {/* Sonar Image */}
           <img
             src={currentImgSrc}
-            alt="Side-Scan Sonar Analysis"
+            alt="Sonar Analysis"
             onLoad={(e) => {
               setImgNaturalSize({
                 width: e.target.naturalWidth || 800,
@@ -202,17 +199,53 @@ export function SonarViewer({
             className="max-h-[540px] max-w-full block object-contain pointer-events-none"
           />
 
-          {/* SVG Overlay for Interactive Clickable Bounding Boxes (Only when in detection view) */}
+          {/* Interactive SVG Bounding Box Layer */}
           {activeView === 'annotated' && (
             <svg
               className="absolute inset-0 w-full h-full pointer-events-auto"
               viewBox={`0 0 ${imgNaturalSize.width} ${imgNaturalSize.height}`}
             >
               {detections.map((det) => {
-                const { x, y, width, height } = det.bbox;
+                let x1, y1, x2, y2;
+                if (Array.isArray(det.bbox)) {
+                  [x1, y1, x2, y2] = det.bbox;
+                } else if (det.bbox) {
+                  x1 = det.bbox.x;
+                  y1 = det.bbox.y;
+                  x2 = det.bbox.x + det.bbox.width;
+                  y2 = det.bbox.y + det.bbox.height;
+                } else {
+                  x1 = 0; y1 = 0; x2 = 0; y2 = 0;
+                }
+
+                const width = Math.max(1, x2 - x1);
+                const height = Math.max(1, y2 - y1);
                 const isSelected = selectedDetectionId === det.id;
                 const isHovered = hoveredDetectionId === det.id;
                 const isActive = isSelected || isHovered;
+
+                const CLASS_COLORS = {
+                  metal_drum: '#10b981',      // Emerald Green
+                  tire_wheel: '#3b82f6',      // Dodger Blue
+                  ghost_net: '#f59e0b',       // Amber Orange
+                  plastic_debris: '#ef4444',  // Rose Red
+                  sunken_wreckage: '#a855f7', // Royal Purple
+                  pipe_pipeline: '#eab308',   // Yellow Gold
+                  container_crate: '#14b8a6', // Teal
+                  anchor_chain: '#f97316',    // Deep Orange
+                  wood_debris: '#b45309',     // Warm Bronze
+                  rock_boulder: '#84cc16',    // Lime Green
+                  unknown_debris: '#06b6d4',  // Cyan
+                  unknown_anomaly: '#06b6d4', // Cyan
+                };
+
+                const cName = det.class_name || det.class || 'unknown_debris';
+                const boxColor = CLASS_COLORS[cName] || '#06b6d4';
+                const labelText = `${cName} ${(det.confidence || 0).toFixed(2)}`;
+                const pillWidth = Math.max(90, labelText.length * 8.5 + 14);
+                const pillHeight = 22;
+                const pillY = Math.max(2, y1 - pillHeight);
+
 
                 return (
                   <g
@@ -225,72 +258,63 @@ export function SonarViewer({
                     onMouseEnter={() => onHoverDetection(det.id)}
                     onMouseLeave={() => onHoverDetection(null)}
                   >
-                    {/* Rounded Bounding Box Border matching Image 1 */}
+                    {/* Bounding Box Rect */}
                     <rect
-                      x={x}
-                      y={y}
+                      x={x1}
+                      y={y1}
                       width={width}
                       height={height}
-                      rx={8}
-                      ry={8}
-                      fill={isActive ? 'rgba(52, 211, 153, 0.12)' : 'transparent'}
-                      stroke={isActive ? '#34d399' : '#10b981'}
+                      rx={3}
+                      ry={3}
+                      fill={isActive ? `${boxColor}22` : 'transparent'}
+                      stroke={boxColor}
                       strokeWidth={isActive ? 3 : 2}
                       className="transition-all duration-150"
                     />
 
-                    {/* Acoustic Target Yellow Reticle matching Image 1 */}
-                    <circle
-                      cx={det.center.x}
-                      cy={det.center.y}
-                      r={14}
-                      stroke="#facc15"
-                      strokeWidth={1.5}
-                      fill="none"
-                      opacity={0.8}
-                    />
-                    <circle
-                      cx={det.center.x}
-                      cy={det.center.y}
-                      r={4}
-                      fill="#facc15"
-                    />
+                    {/* Centroid reticle if hovered or selected */}
+                    {isActive && det.center && (
+                      <>
+                        <circle
+                          cx={det.center.x}
+                          cy={det.center.y}
+                          r={8}
+                          stroke="#facc15"
+                          strokeWidth={1.5}
+                          fill="none"
+                          opacity={0.9}
+                        />
+                        <circle
+                          cx={det.center.x}
+                          cy={det.center.y}
+                          r={3}
+                          fill="#facc15"
+                        />
+                      </>
+                    )}
 
-                    {/* Floating Pill Badge matching Image 1: <Type> — <Confidence>% */}
-                    {(() => {
-                      const label = `${det.display_name || det.class_name} — ${Math.round(det.confidence * 100)}%`;
-                      const pillWidth = Math.max(105, label.length * 8.5 + 20);
-                      const pillHeight = 26;
-                      const pillY = Math.max(4, y - pillHeight - 6);
-
-                      return (
-                        <g>
-                          <rect
-                            x={x}
-                            y={pillY}
-                            width={pillWidth}
-                            height={pillHeight}
-                            rx={6}
-                            ry={6}
-                            fill={isActive ? 'rgba(6, 95, 70, 0.95)' : 'rgba(6, 78, 59, 0.90)'}
-                            stroke={isActive ? '#6ee7b7' : '#34d399'}
-                            strokeWidth={1.5}
-                            filter="drop-shadow(0 2px 4px rgba(0,0,0,0.5))"
-                          />
-                          <text
-                            x={x + 10}
-                            y={pillY + 17}
-                            fill="#ffffff"
-                            fontSize={12}
-                            fontWeight="bold"
-                            fontFamily="Plus Jakarta Sans, sans-serif"
-                            letterSpacing="0.3px"
-                          >
-                            {label}
-                          </text>
-                        </g>
-                      );
-                    })()}
+                    {/* Solid Colored Label Badge: <class_name> <conf> */}
+                    <rect
+                      x={x1}
+                      y={pillY}
+                      width={pillWidth}
+                      height={pillHeight}
+                      rx={3}
+                      ry={3}
+                      fill={boxColor}
+                      filter="drop-shadow(0 2px 4px rgba(0,0,0,0.6))"
+                    />
+                    <text
+                      x={x1 + 6}
+                      y={pillY + 15}
+                      fill="#ffffff"
+                      fontSize={11.5}
+                      fontWeight="bold"
+                      fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+                      letterSpacing="0.3px"
+                    >
+                      {labelText}
+                    </text>
                   </g>
                 );
               })}
@@ -298,7 +322,7 @@ export function SonarViewer({
           )}
         </div>
 
-        {/* Telemetry HUD Pill at bottom-left matching Image 1 */}
+        {/* Telemetry HUD Pill */}
         <div className="absolute bottom-3 left-3 z-20 px-3.5 py-1.5 rounded-full bg-black/85 border border-slate-700/60 text-xs font-mono text-slate-200 backdrop-blur-md flex items-center space-x-2 shadow-lg">
           <span>Alt: 28m AGL</span>
           <span className="text-slate-500">•</span>

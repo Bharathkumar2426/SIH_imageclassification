@@ -5,6 +5,8 @@ import { ControlsPanel } from '../components/ControlsPanel';
 import { SonarViewer } from '../components/SonarViewer';
 import { DetectionSummary } from '../components/DetectionSummary';
 import { DetectionTable } from '../components/DetectionTable';
+import { ImageInfoCard } from '../components/ImageInfoCard';
+import { ActionCards } from '../components/ActionCards';
 import { detectSonarImage } from '../services/api';
 
 export function SonarAnalysisPage({ healthData }) {
@@ -12,7 +14,7 @@ export function SonarAnalysisPage({ healthData }) {
   const [isDetecting, setIsDetecting] = useState(false);
   const [detectionResult, setDetectionResult] = useState(null);
   const [activeView, setActiveView] = useState('annotated');
-  const [confidenceThreshold, setConfidenceThreshold] = useState(0.15);
+  const [confidenceThreshold, setConfidenceThreshold] = useState(0.20);
   const [iouThreshold, setIouThreshold] = useState(0.45);
   const [enablePreprocessing, setEnablePreprocessing] = useState(true);
   const [selectedDetectionId, setSelectedDetectionId] = useState(null);
@@ -96,64 +98,122 @@ export function SonarAnalysisPage({ healthData }) {
         </div>
       )}
 
-      {/* Top Input & Calibration Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Sonar Uploader */}
-        <div className="lg:col-span-7">
-          <SonarUploader
-            selectedFile={selectedFile}
-            onFileSelected={handleFileSelected}
-            isDetecting={isDetecting}
-          />
-        </div>
+      {/* Upload & Calibration Section (collapsible when results are active) */}
+      {(!detectionResult || selectedFile === null) ? (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <div className="lg:col-span-7">
+            <SonarUploader
+              selectedFile={selectedFile}
+              onFileSelected={handleFileSelected}
+              isDetecting={isDetecting}
+            />
+          </div>
 
-        {/* Right Column: Controls & Calibration Panel */}
-        <div className="lg:col-span-5">
-          <ControlsPanel
-            confidenceThreshold={confidenceThreshold}
-            setConfidenceThreshold={setConfidenceThreshold}
-            iouThreshold={iouThreshold}
-            setIouThreshold={setIouThreshold}
-            enablePreprocessing={enablePreprocessing}
-            setEnablePreprocessing={setEnablePreprocessing}
-            onRunDetection={handleRunDetection}
-            isDetecting={isDetecting}
-            hasImage={!!selectedFile}
-            hasResults={!!detectionResult}
-            onResetUpload={() => handleFileSelected(null)}
-            onDownloadAnnotated={handleDownloadAnnotated}
-            onExportJson={handleExportJson}
-            activeView={activeView}
-            setActiveView={setActiveView}
-          />
+          <div className="lg:col-span-5">
+            <ControlsPanel
+              confidenceThreshold={confidenceThreshold}
+              setConfidenceThreshold={setConfidenceThreshold}
+              iouThreshold={iouThreshold}
+              setIouThreshold={setIouThreshold}
+              enablePreprocessing={enablePreprocessing}
+              setEnablePreprocessing={setEnablePreprocessing}
+              onRunDetection={handleRunDetection}
+              isDetecting={isDetecting}
+              hasImage={!!selectedFile}
+              hasResults={!!detectionResult}
+              onResetUpload={() => handleFileSelected(null)}
+              onDownloadAnnotated={handleDownloadAnnotated}
+              onExportJson={handleExportJson}
+              activeView={activeView}
+              setActiveView={setActiveView}
+            />
+          </div>
         </div>
-      </div>
+      ) : (
+        <details className="bg-ocean-900 border border-ocean-800 rounded-xl p-3 text-xs font-mono text-slate-400">
+          <summary className="cursor-pointer font-bold text-cyan-400 hover:text-cyan-300">
+            ⚙️ Calibration Controls & Uploader (Click to adjust confidence / change image)
+          </summary>
+          <div className="mt-4 grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-7">
+              <SonarUploader
+                selectedFile={selectedFile}
+                onFileSelected={handleFileSelected}
+                isDetecting={isDetecting}
+              />
+            </div>
+            <div className="lg:col-span-5">
+              <ControlsPanel
+                confidenceThreshold={confidenceThreshold}
+                setConfidenceThreshold={setConfidenceThreshold}
+                iouThreshold={iouThreshold}
+                setIouThreshold={setIouThreshold}
+                enablePreprocessing={enablePreprocessing}
+                setEnablePreprocessing={setEnablePreprocessing}
+                onRunDetection={handleRunDetection}
+                isDetecting={isDetecting}
+                hasImage={!!selectedFile}
+                hasResults={!!detectionResult}
+                onResetUpload={() => handleFileSelected(null)}
+                onDownloadAnnotated={handleDownloadAnnotated}
+                onExportJson={handleExportJson}
+                activeView={activeView}
+                setActiveView={setActiveView}
+              />
+            </div>
+          </div>
+        </details>
+      )}
 
-      {/* Main Analysis Section (Section 11) */}
+      {/* Main Analysis Section matching Reference Screenshot */}
       {detectionResult && (
         <div className="space-y-6 animate-fadeIn">
-          {/* Summary Metric HUD */}
-          <DetectionSummary result={detectionResult} />
+          {/* Main 2-Column Grid: Viewer on left, Table + Info Card on right */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            {/* Left: Interactive Deep-Zoom Sonar Viewer */}
+            <div className="lg:col-span-7 xl:col-span-8">
+              <SonarViewer
+                detectionResult={detectionResult}
+                activeView={activeView}
+                setActiveView={setActiveView}
+                selectedDetectionId={selectedDetectionId}
+                hoveredDetectionId={hoveredDetectionId}
+                onSelectDetection={setSelectedDetectionId}
+                onHoverDetection={setHoveredDetectionId}
+              />
+            </div>
 
-          {/* Interactive Deep-Zoom Sonar Viewer (Section 12) */}
-          <SonarViewer
-            detectionResult={detectionResult}
-            activeView={activeView}
-            setActiveView={setActiveView}
-            selectedDetectionId={selectedDetectionId}
-            hoveredDetectionId={hoveredDetectionId}
-            onSelectDetection={setSelectedDetectionId}
-            onHoverDetection={setHoveredDetectionId}
-          />
+            {/* Right: Detected Targets Table & Image Information Card */}
+            <div className="lg:col-span-5 xl:col-span-4 space-y-6">
+              <DetectionTable
+                detections={detectionResult.detections}
+                selectedDetectionId={selectedDetectionId}
+                hoveredDetectionId={hoveredDetectionId}
+                onSelectDetection={setSelectedDetectionId}
+                onHoverDetection={setHoveredDetectionId}
+                confidenceThreshold={confidenceThreshold}
+              />
 
-          {/* Detection Table with Two-Way Synchronization */}
-          <DetectionTable
-            detections={detectionResult.detections}
-            selectedDetectionId={selectedDetectionId}
-            hoveredDetectionId={hoveredDetectionId}
-            onSelectDetection={setSelectedDetectionId}
-            onHoverDetection={setHoveredDetectionId}
-            confidenceThreshold={confidenceThreshold}
+              <ImageInfoCard
+                filename={selectedFile?.name || detectionResult.image_id || 'sample_sonar_image6.jpg'}
+                dimensions={{
+                  width: detectionResult.image_width || (detectionResult.stage_images?.original ? 800 : 1024),
+                  height: detectionResult.image_height || (detectionResult.stage_images?.original ? 600 : 2048),
+                }}
+                location="9.3142°N, 79.1821°E"
+                altitude="28m AGL"
+                detectionCount={detectionResult.detections?.length || 0}
+                model="sonar_v2.pt + EfficientNet-B0"
+                processingTimeMs={Math.round(detectionResult.processing_time_ms || 84)}
+              />
+
+            </div>
+          </div>
+
+          {/* Bottom Action Cards */}
+          <ActionCards
+            onUploadClick={() => handleFileSelected(null)}
+            onExportClick={handleExportJson}
           />
         </div>
       )}

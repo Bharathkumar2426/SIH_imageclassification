@@ -1,14 +1,15 @@
-"""Pydantic Request & Response Schemas matching Sections 2 & 7 of Requirements."""
+"""Pydantic Request & Response Schemas matching SIH 26057 Specifications."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+# pyrefly: ignore [missing-import]
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class BoundingBox(BaseModel):
-    """Bounding box format strictly matching Section 2 & 7 example."""
+    """Bounding box format for width/height coordinate access."""
     x: int = Field(..., description="Top-left x coordinate")
     y: int = Field(..., description="Top-left y coordinate")
     width: int = Field(..., description="Bounding box width")
@@ -21,18 +22,34 @@ class CenterPoint(BaseModel):
 
 
 class DetectionItem(BaseModel):
-    """Detection item matching Section 2 & 7 format with SIH acoustic metadata."""
+
+    """Detection item supporting both [x1, y1, x2, y2] array and {x,y,w,h} objects."""
+    model_config = ConfigDict(populate_by_name=True)
+
     id: int = Field(..., description="Detection target index (1, 2, ...)")
-    class_name: str = Field(..., alias="class", description="Class name (e.g. metal_debris)")
-    display_name: str = Field(..., description="Human-readable name (e.g. Metal Debris)")
-    confidence: float = Field(..., description="Real model confidence score (0.0 to 1.0)")
-    bbox: BoundingBox = Field(..., description="Bounding box coordinates")
+    class_name: str = Field(..., description="Class name (e.g. ghost_net)")
+    class_: Optional[str] = Field(None, serialization_alias="class", description="Class alias")
+    display_name: str = Field(..., description="Human-readable name (e.g. Ghost Net)")
+    confidence: float = Field(..., description="Model confidence score (0.0 to 1.0)")
+    bbox: List[int] = Field(..., description="Bounding box coordinates [x1, y1, x2, y2]")
+    bbox_coords: Optional[BoundingBox] = Field(None, description="Bounding box dictionary {x, y, width, height}")
     center: CenterPoint = Field(..., description="Target geometric acoustic center")
     area: int = Field(..., description="Bounding box pixel area")
+    anomaly_score: float = Field(0.0, description="Empirical anomaly score (0.0 to 1.0)")
+    classification_source: str = Field("detector", description="detector | second_stage | unknown")
     anomaly_type: str = Field("KNOWN_OBJECT", description="KNOWN_OBJECT or UNCLASSIFIED_ANOMALY")
+    top_3: List[Dict[str, Any]] = Field(default_factory=list, description="Top-3 candidate predictions")
 
-    class Config:
-        populate_by_name = True
+    @model_validator(mode="before")
+    @classmethod
+    def sync_class_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            c = data.get("class_name") or data.get("class") or "unknown_debris"
+            data["class_name"] = c
+            data["class"] = c
+            data["class_"] = c
+        return data
+
 
 
 class DetectionSummaryStats(BaseModel):
@@ -40,24 +57,27 @@ class DetectionSummaryStats(BaseModel):
     high_confidence: int = 0      # >= 0.70
     medium_confidence: int = 0    # 0.40 - 0.70
     low_confidence: int = 0       # < 0.40
+    unknown_anomalies: int = 0
 
 
 class DetectResponse(BaseModel):
-    """Inference response schema matching Section 7 example."""
-    image_id: str = Field(..., description="Unique sonar image identifier (e.g. SONAR_000001)")
+    """Inference response schema for detection pipeline."""
+    image_id: str = Field(..., description="Unique sonar image identifier")
     model: str = Field(..., description="Model version/name used for inference")
     detections: List[DetectionItem] = Field(..., description="List of detected targets")
     total_objects: int = Field(..., description="Total count of confident targets")
-    annotated_image_url: str = Field(..., description="Relative or absolute URL to annotated image")
+    annotated_image_url: str = Field(..., description="URL to annotated image")
     original_image_url: str = Field(..., description="URL to original image")
     enhanced_image_url: str = Field(..., description="URL to preprocessed/enhanced image")
-    processing_time_ms: float = Field(..., description="Total processing latency in milliseconds")
-    preprocessing_time_ms: float = Field(..., description="Preprocessing latency in milliseconds")
-    inference_time_ms: float = Field(..., description="Model inference latency in milliseconds")
-    summary: DetectionSummaryStats = Field(..., description="High/medium/low confidence counts")
+    processing_time_ms: float = Field(..., description="Total processing latency in ms")
+    preprocessing_time_ms: float = Field(..., description="Preprocessing latency in ms")
+    inference_time_ms: float = Field(..., description="Model inference latency in ms")
+    summary: DetectionSummaryStats = Field(..., description="Summary statistics")
+    image_width: Optional[int] = Field(None, description="Native image width in pixels")
+    image_height: Optional[int] = Field(None, description="Native image height in pixels")
     model_metadata: Dict[str, Any] = Field(default_factory=dict)
-    # Stage base64 data for immediate side-by-side comparison in UI
     stage_images: Dict[str, str] = Field(default_factory=dict)
+
 
 
 class ImageDetailsResponse(BaseModel):
@@ -74,7 +94,6 @@ class ImageDetailsResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    status: str = "ok"
     project: str
     version: str
     pytorch_version: str
@@ -84,4 +103,6 @@ class HealthResponse(BaseModel):
     model_summary: str
     is_sonar_trained: bool
     classes_count: int
-    classes: Dict[int, str]
+    classes: Dict[str, str]
+    status: str = "ok"
+    second_stage_active: bool = True

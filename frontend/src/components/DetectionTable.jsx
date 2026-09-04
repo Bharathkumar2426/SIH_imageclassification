@@ -1,5 +1,21 @@
 import React from 'react';
-import { AlertTriangle, CheckCircle2, Crosshair, HelpCircle, Table } from 'lucide-react';
+import { Crosshair, AlertTriangle } from 'lucide-react';
+
+const CLASS_COLORS = {
+  metal_drum: '#10b981',      // Emerald Green
+  tire_wheel: '#3b82f6',      // Dodger Blue
+  ghost_net: '#f59e0b',       // Amber Orange
+  plastic_debris: '#ef4444',  // Rose Red
+  sunken_wreckage: '#a855f7', // Royal Purple
+  pipe_pipeline: '#eab308',   // Yellow Gold
+  container_crate: '#14b8a6', // Teal
+  anchor_chain: '#f97316',    // Deep Orange
+  wood_debris: '#b45309',     // Warm Bronze
+  rock_boulder: '#84cc16',    // Lime Green
+  unknown_debris: '#06b6d4',  // Cyan
+  unknown_anomaly: '#06b6d4', // Cyan
+};
+
 
 export function DetectionTable({
   detections = [],
@@ -11,16 +27,14 @@ export function DetectionTable({
 }) {
   if (detections.length === 0) {
     return (
-      <div className="bg-ocean-900 border border-ocean-800 rounded-xl p-8 text-center space-y-3">
-        <div className="w-12 h-12 rounded-full bg-ocean-850 border border-ocean-750 text-amber-400 mx-auto flex items-center justify-center">
-          <AlertTriangle className="w-6 h-6" />
+      <div className="bg-ocean-900 border border-ocean-800 rounded-xl p-6 text-center space-y-2">
+        <div className="w-10 h-10 rounded-full bg-ocean-850 border border-ocean-750 text-amber-400 mx-auto flex items-center justify-center">
+          <AlertTriangle className="w-5 h-5" />
         </div>
         <div>
-          <h4 className="text-base font-semibold text-slate-200">No Confident Targets Detected</h4>
-          <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-            No acoustic anomaly exceeded the current confidence threshold of{' '}
-            <span className="font-mono text-cyan-400 font-bold">{(confidenceThreshold * 100).toFixed(0)}%</span>.
-            Try lowering the confidence slider (e.g. to 15% or 20%) to inspect subtle seabed anomalies.
+          <h4 className="text-sm font-semibold text-slate-200">No Targets Detected</h4>
+          <p className="text-xs text-slate-400 mt-1">
+            No object met the cutoff of {(confidenceThreshold * 100).toFixed(0)}%.
           </p>
         </div>
       </div>
@@ -28,97 +42,82 @@ export function DetectionTable({
   }
 
   return (
-    <div className="bg-ocean-900 border border-ocean-800 rounded-xl overflow-hidden shadow-sm">
+    <div className="bg-ocean-900 border border-ocean-800 rounded-xl overflow-hidden shadow-lg">
       <div className="px-4 py-3 border-b border-ocean-800 flex items-center justify-between bg-ocean-850">
         <div className="flex items-center space-x-2">
-          <Table className="w-4 h-4 text-cyan-400" />
+          <Crosshair className="w-4 h-4 text-cyan-400" />
           <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider font-mono">
-            Detection Table ({detections.length} Targets)
+            Detected Targets ({detections.length})
           </h3>
         </div>
-        <span className="text-[11px] font-mono text-slate-400">
-          Click any row to focus target in viewer
+        <span className="text-[10px] font-mono text-slate-400">
+          Click row to highlight
         </span>
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse text-xs">
+        <table className="w-full text-left border-collapse text-xs font-mono">
           <thead>
-            <tr className="border-b border-ocean-800 bg-ocean-950/60 text-slate-400 font-mono text-[11px]">
-              <th className="py-2.5 px-3 font-semibold">#</th>
-              <th className="py-2.5 px-3 font-semibold">OBJECT TYPE</th>
-              <th className="py-2.5 px-3 font-semibold">CONFIDENCE</th>
-              <th className="py-2.5 px-3 font-semibold">X</th>
-              <th className="py-2.5 px-3 font-semibold">Y</th>
-              <th className="py-2.5 px-3 font-semibold">W</th>
-              <th className="py-2.5 px-3 font-semibold">H</th>
-              <th className="py-2.5 px-3 font-semibold">AREA (PX²)</th>
-              <th className="py-2.5 px-3 font-semibold">CLASSIFICATION</th>
+            <tr className="border-b border-ocean-800 bg-ocean-950/60 text-slate-400 text-[11px]">
+              <th className="py-2.5 px-3 font-semibold w-8">#</th>
+              <th className="py-2.5 px-3 font-semibold">Object Name</th>
+              <th className="py-2.5 px-3 font-semibold text-right">Confidence</th>
+              <th className="py-2.5 px-3 font-semibold text-right">Anomaly Score</th>
+              <th className="py-2.5 px-3 font-semibold text-right">Source</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-ocean-800/60 font-mono">
-            {detections.map((det) => {
+          <tbody className="divide-y divide-ocean-800/40">
+            {detections.map((det, idx) => {
               const isSelected = selectedDetectionId === det.id;
               const isHovered = hoveredDetectionId === det.id;
               const isActive = isSelected || isHovered;
-              const { x, y, width, height } = det.bbox;
-              const isKnown = det.anomaly_type === 'KNOWN_OBJECT';
+
+              const cName = det.class_name || det.class || 'unknown_debris';
+              const dotColor = CLASS_COLORS[cName] || '#06b6d4';
+              const confPercent = ((det.confidence || 0) * 100).toFixed(1);
+              const anomScore = ((det.anomaly_score !== undefined ? det.anomaly_score : 0.0)).toFixed(2);
+              
+              // Standardize source name matching screenshot: 'Classifier' or 'OOD'
+              let sourceDisplay = 'Classifier';
+              if (det.classification_source === 'unknown' || det.classification_source === 'OOD' || cName.includes('unknown')) {
+                sourceDisplay = 'OOD';
+              }
 
               return (
                 <tr
-                  key={det.id}
+                  key={det.id || idx}
                   onClick={() => onSelectDetection(det.id)}
                   onMouseEnter={() => onHoverDetection(det.id)}
                   onMouseLeave={() => onHoverDetection(null)}
-                  className={`cursor-pointer transition ${
+                  className={`cursor-pointer transition-colors ${
                     isActive
-                      ? 'bg-cyan-950/40 text-cyan-200 border-l-4 border-l-cyan-400'
-                      : 'hover:bg-ocean-850/60 text-slate-300'
+                      ? 'bg-cyan-950/50 text-white'
+                      : 'hover:bg-ocean-850/70 text-slate-300'
                   }`}
                 >
-                  <td className="py-2.5 px-3 font-bold text-slate-200">
-                    #{det.id}
+                  <td className="py-2.5 px-3 text-slate-400 font-bold">
+                    {det.id || idx + 1}
                   </td>
-                  <td className="py-2.5 px-3 font-sans font-semibold text-white">
-                    {det.display_name || det.class_name.replace('_', ' ').toUpperCase()}
-                  </td>
-                  <td className="py-2.5 px-3">
+                  <td className="py-2.5 px-3 font-medium text-slate-200">
                     <div className="flex items-center space-x-2">
-                      <span className={`font-bold ${
-                        det.confidence >= 0.7 
-                          ? 'text-emerald-400' 
-                          : det.confidence >= 0.4 
-                          ? 'text-amber-400' 
-                          : 'text-slate-400'
-                      }`}>
-                        {(det.confidence * 100).toFixed(1)}%
-                      </span>
-                      <div className="w-12 h-1.5 rounded-full bg-ocean-800 overflow-hidden hidden sm:block">
-                        <div
-                          className={`h-full ${
-                            det.confidence >= 0.7 
-                              ? 'bg-emerald-400' 
-                              : det.confidence >= 0.4 
-                              ? 'bg-amber-400' 
-                              : 'bg-slate-400'
-                          }`}
-                          style={{ width: `${Math.round(det.confidence * 100)}%` }}
-                        />
-                      </div>
+                      <span
+                        className="w-2.5 h-2.5 rounded-full inline-block shadow-sm"
+                        style={{ backgroundColor: dotColor }}
+                      />
+                      <span>{cName}</span>
                     </div>
                   </td>
-                  <td className="py-2.5 px-3 text-slate-300">{x}</td>
-                  <td className="py-2.5 px-3 text-slate-300">{y}</td>
-                  <td className="py-2.5 px-3 text-slate-300">{width}</td>
-                  <td className="py-2.5 px-3 text-slate-300">{height}</td>
-                  <td className="py-2.5 px-3 text-slate-400">{det.area.toLocaleString()}</td>
-                  <td className="py-2.5 px-3">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                      isKnown
-                        ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                        : 'bg-amber-950 text-amber-400 border border-amber-800'
+                  <td className="py-2.5 px-3 text-right font-bold text-slate-200">
+                    {confPercent}%
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-slate-300">
+                    {anomScore}
+                  </td>
+                  <td className="py-2.5 px-3 text-right">
+                    <span className={`text-[11px] font-semibold ${
+                      sourceDisplay === 'OOD' ? 'text-cyan-400' : 'text-slate-300'
                     }`}>
-                      {isKnown ? 'KNOWN OBJECT' : 'ACOUSTIC ANOMALY'}
+                      {sourceDisplay}
                     </span>
                   </td>
                 </tr>
