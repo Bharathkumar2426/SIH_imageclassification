@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Compass, MapPin, ShieldAlert, AlertTriangle, 
-  ArrowLeft, Crosshair, Radio, RefreshCw, Layers, Info, CheckCircle2, Sparkles
+  ArrowLeft, Crosshair, Radio, RefreshCw, Layers, Info, CheckCircle2, Sparkles, Ship
 } from 'lucide-react';
 import { SonarMap } from '../components/SonarMap';
+import { VesselAlertsBanner } from '../components/VesselAlertsBanner';
 import { enrichGeospatial, getFleetGeospatial } from '../services/api';
+import { triggerTestAlert, clearTestAlerts } from '../services/aisApi';
 
 const SEVERITY_BADGES = {
   EXTREME: {
@@ -38,6 +40,8 @@ export function SonarMapPage({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [selectedDetectionId, setSelectedDetectionId] = useState(selectedTargetId || null);
+  const [selectedVesselMmsi, setSelectedVesselMmsi] = useState(null);
+  const [activeAlerts, setActiveAlerts] = useState([]);
 
   // Sync selected detection
   useEffect(() => {
@@ -113,8 +117,40 @@ export function SonarMapPage({
 
   const handleTargetClick = (targetId) => {
     setSelectedDetectionId(targetId);
+    setSelectedVesselMmsi(null);
     if (onSelectTarget) {
       onSelectTarget(targetId);
+    }
+  };
+
+  const handleLocateVessel = (mmsi) => {
+    setSelectedVesselMmsi(mmsi);
+    setSelectedDetectionId(null);
+  };
+
+  const [isTriggeringTest, setIsTriggeringTest] = useState(false);
+
+  const handleTriggerTestSOS = async () => {
+    try {
+      setIsTriggeringTest(true);
+      const res = await triggerTestAlert();
+      if (res && res.vessel) {
+        setSelectedVesselMmsi(res.vessel.mmsi);
+        setSelectedDetectionId(null);
+      }
+    } catch (err) {
+      console.error('Failed to trigger test SOS alert:', err);
+    } finally {
+      setIsTriggeringTest(false);
+    }
+  };
+
+  const handleClearAlerts = async () => {
+    try {
+      await clearTestAlerts();
+      setActiveAlerts([]);
+    } catch (err) {
+      console.error('Failed to clear alerts:', err);
     }
   };
 
@@ -133,7 +169,7 @@ export function SonarMapPage({
               </h2>
               <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800/60 flex items-center space-x-1">
                 <Sparkles className="w-3 h-3" />
-                <span>Live Automarking Active</span>
+                <span>Live AIS & Sonar Active</span>
               </span>
             </div>
             <p className="text-xs text-slate-400 font-mono">
@@ -142,8 +178,19 @@ export function SonarMapPage({
           </div>
         </div>
 
-        {/* View Mode Switcher and Return button */}
+        {/* View Mode Switcher, SOS Simulator, and Return button */}
         <div className="flex items-center space-x-3">
+          {/* Test SOS Alert Trigger Button */}
+          <button
+            onClick={handleTriggerTestSOS}
+            disabled={isTriggeringTest}
+            title="Simulate a live vessel breaching a debris safety geofence to verify real-time SOS collision alerts"
+            className="px-3 py-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 hover:text-white border border-rose-600/70 text-xs font-mono font-bold flex items-center space-x-1.5 transition shadow-md shadow-rose-950/50 active:scale-95"
+          >
+            <ShieldAlert className="w-4 h-4 text-rose-400 animate-pulse" />
+            <span>{isTriggeringTest ? 'Triggering...' : '🚨 Test SOS Breach'}</span>
+          </button>
+
           {/* Mode Switcher */}
           <div className="flex items-center space-x-1 bg-ocean-950/80 p-1 rounded-lg border border-ocean-800 text-xs font-mono">
             {hasLiveResults && (
@@ -180,6 +227,15 @@ export function SonarMapPage({
         </div>
       </div>
 
+      {/* Dynamic Proximity Alerts Banner */}
+      {activeAlerts.length > 0 && (
+        <VesselAlertsBanner
+          alerts={activeAlerts}
+          onDismiss={handleClearAlerts}
+          onLocateVessel={handleLocateVessel}
+        />
+      )}
+
       {/* Error Notice */}
       {error && (
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 text-amber-400 text-xs font-mono flex items-center justify-between">
@@ -195,8 +251,11 @@ export function SonarMapPage({
           <SonarMap
             geospatialData={geospatialData}
             selectedTargetId={selectedDetectionId}
+            selectedVesselMmsi={selectedVesselMmsi}
             onSelectTarget={handleTargetClick}
+            onSelectVessel={setSelectedVesselMmsi}
             onSwitchToAnalysis={onSwitchToAnalysis}
+            onAlertsChange={setActiveAlerts}
           />
 
           {/* Quick Metrics Bar */}

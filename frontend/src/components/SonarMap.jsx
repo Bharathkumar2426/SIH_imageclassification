@@ -2,8 +2,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { 
   Layers, ShieldAlert, AlertTriangle, CheckCircle2, 
-  Compass, Eye, Maximize2, Minimize2, MapPin, ZoomIn, ZoomOut, RotateCcw, Globe, Anchor, Tag
+  Compass, Eye, Maximize2, Minimize2, MapPin, ZoomIn, ZoomOut, RotateCcw, Globe, Anchor, Tag,
+  Ship, Navigation, Radio, TrendingUp
 } from 'lucide-react';
+import { AisStatusBadge } from './AisStatusBadge';
+import { 
+  getAisStatus, getAisVessels, getAisTracks, getAisAlerts, 
+  syncDebrisGeofences, connectAisWebSocket 
+} from '../services/aisApi';
 
 const SEVERITY_CONFIG = {
   EXTREME: {
@@ -43,6 +49,7 @@ const BASEMAPS = {
     url: `https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key=${CARTO_KEY}`,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
     maxZoom: 20,
+    maxNativeZoom: 19,
     hasBuiltinLabels: true,
   },
   cartoVoyager: {
@@ -50,6 +57,7 @@ const BASEMAPS = {
     url: `https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=${CARTO_KEY}`,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
     maxZoom: 20,
+    maxNativeZoom: 19,
     hasBuiltinLabels: true,
   },
   esriOcean: {
@@ -57,7 +65,8 @@ const BASEMAPS = {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
     labelUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Reference/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri &mdash; GEBCO, NOAA, National Geographic',
-    maxZoom: 16,
+    maxZoom: 20,
+    maxNativeZoom: 13,
     hasBuiltinLabels: false,
   },
   esriDark: {
@@ -65,7 +74,8 @@ const BASEMAPS = {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
     labelUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri &mdash; Esri, USGS, FAO',
-    maxZoom: 16,
+    maxZoom: 20,
+    maxNativeZoom: 16,
     hasBuiltinLabels: false,
   },
   satellite: {
@@ -73,7 +83,8 @@ const BASEMAPS = {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     labelUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS',
-    maxZoom: 18,
+    maxZoom: 20,
+    maxNativeZoom: 17,
     hasBuiltinLabels: false,
   },
   osm: {
@@ -81,7 +92,8 @@ const BASEMAPS = {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     subdomains: 'abc',
-    maxZoom: 19,
+    maxZoom: 20,
+    maxNativeZoom: 19,
     hasBuiltinLabels: true,
   },
 };
@@ -91,8 +103,11 @@ const SEAMARKS_URL = 'https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png';
 export function SonarMap({
   geospatialData,
   selectedTargetId,
+  selectedVesselMmsi,
   onSelectTarget,
+  onSelectVessel,
   onSwitchToAnalysis,
+  onAlertsChange,
 }) {
   const mapContainerRef = useRef(null);
   const mapInstanceRef = useRef(null);
@@ -101,6 +116,8 @@ export function SonarMap({
   const seamarksLayerRef = useRef(null);
   const markersGroupRef = useRef(null);
   const geofencesGroupRef = useRef(null);
+  const vesselsGroupRef = useRef(null);
+  const tracksGroupRef = useRef(null);
 
   const [activeBasemap, setActiveBasemap] = useState('cartoDark');
   const [showOceanLabels, setShowOceanLabels] = useState(true);
@@ -109,6 +126,20 @@ export function SonarMap({
   const [showGeofences, setShowGeofences] = useState(true);
   const [enablePulsing, setEnablePulsing] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Live AIS Layer States
+  const [showLiveVessels, setShowLiveVessels] = useState(true);
+  const [showVesselTracks, setShowVesselTracks] = useState(true);
+  const [vesselsMap, setVesselsMap] = useState({});
+  const [tracksMap, setTracksMap] = useState({});
+  const [aisStatus, setAisStatus] = useState('OFFLINE');
+  const [aisLastUpdate, setAisLastUpdate] = useState(null);
+  const [activeAlerts, setActiveAlerts] = useState([]);
+  const [mapMoveTick, setMapMoveTick] = useState(0);
+
+  const hasAutoFittedRef = useRef(false);
+  const prevTargetIdRef = useRef(null);
+  const prevVesselMmsiRef = useRef(null);
 
   const detections = geospatialData?.detections || [];
   const telemetry = geospatialData?.towfish_telemetry || {
@@ -133,7 +164,8 @@ export function SonarMap({
     if (cfg.labelUrl) {
       const newLabelLayer = L.tileLayer(cfg.labelUrl, {
         attribution: 'Labels &copy; Esri / GEBCO / NOAA',
-        maxZoom: cfg.maxZoom || 18,
+        maxZoom: 20,
+        maxNativeZoom: cfg.maxNativeZoom || 16,
         opacity: 0.95,
         zIndex: 400,
       });
@@ -142,7 +174,7 @@ export function SonarMap({
     }
   };
 
-  // Initialize Map with Global World Capabilities (minZoom 2)
+  // 1. Initialize Map with Global World Capabilities (minZoom 2)
   useEffect(() => {
     if (!mapContainerRef.current) return;
     if (mapInstanceRef.current) return;
@@ -154,29 +186,31 @@ export function SonarMap({
       center: [initialLat, initialLng],
       zoom: 16,
       minZoom: 2,
-      maxZoom: 19,
+      maxZoom: 20,
       worldCopyJump: true,
       zoomControl: false,
     });
 
     L.control.zoom({ position: 'topright' }).addTo(map);
 
-    // 1. Base tile layer
+    // Base tile layer
     const cfg = BASEMAPS[activeBasemap] || BASEMAPS.cartoDark;
     const tileLayer = L.tileLayer(cfg.url, {
       attribution: cfg.attribution,
       subdomains: cfg.subdomains || 'abc',
-      maxZoom: cfg.maxZoom || 19,
+      maxZoom: 20,
+      maxNativeZoom: cfg.maxNativeZoom || 18,
     }).addTo(map);
     tileLayerRef.current = tileLayer;
 
-    // 2. Properly matched reference label layer
+    // Reference label layer
     updateLabelLayer(map, activeBasemap, showOceanLabels);
 
-    // 3. OpenSeaMap Nautical Marks & Buoys Overlay
+    // OpenSeaMap Nautical Marks Overlay
     const seamarksLayer = L.tileLayer(SEAMARKS_URL, {
       attribution: '&copy; <a href="http://www.openseamap.org">OpenSeaMap</a> contributors',
-      maxZoom: 18,
+      maxZoom: 20,
+      maxNativeZoom: 18,
       opacity: 0.9,
       zIndex: 450,
     });
@@ -185,8 +219,15 @@ export function SonarMap({
     }
     seamarksLayerRef.current = seamarksLayer;
 
+    // Layer Groups: 1. Debris markers, 2. Debris Geofences, 3. Live AIS Vessels, 4. AIS Trajectory Tracks
     markersGroupRef.current = L.featureGroup().addTo(map);
     geofencesGroupRef.current = L.featureGroup().addTo(map);
+    tracksGroupRef.current = L.featureGroup().addTo(map);
+    vesselsGroupRef.current = L.featureGroup().addTo(map);
+
+    map.on('moveend', () => setMapMoveTick((t) => t + 1));
+    map.on('zoomend', () => setMapMoveTick((t) => t + 1));
+
     mapInstanceRef.current = map;
 
     return () => {
@@ -195,7 +236,7 @@ export function SonarMap({
     };
   }, []);
 
-  // Switch Base Tile Layer & its matching label layer
+  // 2. Switch Base Tile Layer & its matching label layer
   useEffect(() => {
     if (!mapInstanceRef.current || !tileLayerRef.current) return;
     const cfg = BASEMAPS[activeBasemap] || BASEMAPS.cartoDark;
@@ -203,7 +244,8 @@ export function SonarMap({
     const newLayer = L.tileLayer(cfg.url, {
       attribution: cfg.attribution,
       subdomains: cfg.subdomains || 'abc',
-      maxZoom: cfg.maxZoom || 19,
+      maxZoom: 20,
+      maxNativeZoom: cfg.maxNativeZoom || 18,
     }).addTo(mapInstanceRef.current);
     tileLayerRef.current = newLayer;
     newLayer.bringToBack();
@@ -211,7 +253,7 @@ export function SonarMap({
     updateLabelLayer(mapInstanceRef.current, activeBasemap, showOceanLabels);
   }, [activeBasemap, showOceanLabels]);
 
-  // Toggle Nautical Seamarks Overlay
+  // 3. Toggle Nautical Seamarks Overlay
   useEffect(() => {
     if (!mapInstanceRef.current || !seamarksLayerRef.current) return;
     if (showSeamarks) {
@@ -225,7 +267,7 @@ export function SonarMap({
     }
   }, [showSeamarks]);
 
-  // Handle Container Resizing
+  // 4. Handle Container Resizing
   useEffect(() => {
     if (mapInstanceRef.current) {
       setTimeout(() => {
@@ -234,7 +276,152 @@ export function SonarMap({
     }
   }, [isFullscreen]);
 
-  // Render Markers and Geofences
+  // 5. Synchronize active debris geofences with the AIS backend for collision evaluation
+  useEffect(() => {
+    if (detections && detections.length > 0) {
+      const gfs = detections.map((d) => ({
+        id: d.detection_id,
+        class_name: d.class_name,
+        latitude: d.geolocation.latitude,
+        longitude: d.geolocation.longitude,
+        radius_meters: d.geofence ? d.geofence.radius_meters : 25.0,
+        severity: d.severity || 'LOW',
+      }));
+      syncDebrisGeofences(gfs);
+    }
+  }, [detections]);
+
+  // 6. Connect to Live AIS WebSocket Stream & Setup Fallback Polling
+  useEffect(() => {
+    let isMounted = true;
+
+    // Initial snapshot fetch via REST
+    const fetchInitialData = async () => {
+      try {
+        const [statusData, vesselsData, tracksData, alertsData] = await Promise.all([
+          getAisStatus().catch(() => null),
+          getAisVessels().catch(() => []),
+          getAisTracks().catch(() => ({})),
+          getAisAlerts().catch(() => []),
+        ]);
+
+        if (!isMounted) return;
+
+        if (statusData) {
+          setAisStatus(statusData.status || 'OFFLINE');
+          setAisLastUpdate(statusData.last_update);
+        }
+
+        if (Array.isArray(vesselsData)) {
+          const mapObj = {};
+          vesselsData.forEach((v) => {
+            if (v && v.mmsi) mapObj[v.mmsi] = v;
+          });
+          setVesselsMap(mapObj);
+        }
+
+        if (tracksData) {
+          setTracksMap(tracksData);
+        }
+
+        if (Array.isArray(alertsData)) {
+          setActiveAlerts(alertsData);
+          if (onAlertsChange) onAlertsChange(alertsData);
+        }
+      } catch (err) {
+        console.debug('AIS initial fetch notice:', err);
+      }
+    };
+
+    fetchInitialData();
+
+    // WebSocket real-time subscription
+    const wsClient = connectAisWebSocket({
+      onInitialState: (data) => {
+        if (!isMounted) return;
+        if (data.status) setAisStatus(data.status);
+        if (data.timestamp) setAisLastUpdate(data.timestamp);
+
+        if (Array.isArray(data.vessels)) {
+          const mapObj = {};
+          data.vessels.forEach((v) => {
+            if (v && v.mmsi) mapObj[v.mmsi] = v;
+          });
+          setVesselsMap(mapObj);
+        }
+
+        if (Array.isArray(data.alerts)) {
+          setActiveAlerts(data.alerts);
+          if (onAlertsChange) onAlertsChange(data.alerts);
+        }
+      },
+      onStatusChange: (newStatus) => {
+        if (!isMounted) return;
+        setAisStatus(newStatus);
+      },
+      onVesselUpdate: (vessel) => {
+        if (!isMounted || !vessel || !vessel.mmsi) return;
+        setVesselsMap((prev) => ({
+          ...prev,
+          [vessel.mmsi]: vessel,
+        }));
+        setAisLastUpdate(vessel.timestamp || new Date().toISOString());
+
+        // Append to tracks locally
+        setTracksMap((prev) => {
+          const existing = prev[vessel.mmsi] || [];
+          const newPoint = {
+            latitude: vessel.latitude,
+            longitude: vessel.longitude,
+            timestamp: vessel.timestamp,
+            speed_knots: vessel.speed_knots,
+            course_deg: vessel.course_deg,
+          };
+          const updated = [...existing.slice(-99), newPoint];
+          return {
+            ...prev,
+            [vessel.mmsi]: updated,
+          };
+        });
+      },
+      onProximityAlert: (alert) => {
+        if (!isMounted || !alert) return;
+        setActiveAlerts((prev) => {
+          const filtered = prev.filter(
+            (a) => !(a.vessel_mmsi === alert.vessel_mmsi && a.detection_id === alert.detection_id)
+          );
+          const updated = [...filtered, alert];
+          if (onAlertsChange) onAlertsChange(updated);
+          return updated;
+        });
+      },
+      onProximityClear: (alertId) => {
+        if (!isMounted || !alertId) return;
+        setActiveAlerts((prev) => {
+          const updated = prev.filter(
+            (a) => `${a.vessel_mmsi}_${a.detection_id}` !== alertId
+          );
+          if (onAlertsChange) onAlertsChange(updated);
+          return updated;
+        });
+      },
+      onDisconnected: () => {
+        if (!isMounted) return;
+        setAisStatus('CONNECTING');
+      },
+    });
+
+    // Background interval to refresh status & staleness
+    const interval = setInterval(fetchInitialData, 12000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      wsClient.disconnect();
+    };
+  }, []);
+
+  // 7. Render Existing Debris Markers (Layer 1) and Dynamic Geofences (Layer 2) - STRICTLY PRESERVED
   useEffect(() => {
     if (!mapInstanceRef.current || !markersGroupRef.current || !geofencesGroupRef.current) return;
 
@@ -253,7 +440,7 @@ export function SonarMap({
       const sevCfg = SEVERITY_CONFIG[sev] || SEVERITY_CONFIG.LOW;
       const isSelected = selectedTargetId === d.detection_id;
 
-      // 1. Dynamic Geofence Polygon / Circle
+      // 1. Dynamic Geofence Polygon / Circle (Layer 2)
       if (showGeofences && d.geofence) {
         const radiusMeters = d.geofence.radius_meters;
         const circle = L.circle([lat, lng], {
@@ -274,7 +461,7 @@ export function SonarMap({
         circle.addTo(geofencesGroupRef.current);
       }
 
-      // 2. Custom Marker Icon
+      // 2. Custom Sonar Debris Marker Icon (Layer 1)
       const pulseClass = enablePulsing ? sevCfg.pulseClass : '';
       const markerHtml = `
         <div class="relative flex items-center justify-center cursor-pointer">
@@ -356,18 +543,146 @@ export function SonarMap({
       marker.addTo(markersGroupRef.current);
     });
 
-    // Auto fit bounds if targets exist
-    if (filteredDetections.length > 0 && mapInstanceRef.current) {
+    // Auto fit bounds on initial mount only once
+    if (!hasAutoFittedRef.current && filteredDetections.length > 0 && mapInstanceRef.current) {
       const bounds = markersGroupRef.current.getBounds();
       if (bounds.isValid()) {
         mapInstanceRef.current.fitBounds(bounds.pad(0.25), { maxZoom: 18 });
+        hasAutoFittedRef.current = true;
       }
     }
-  }, [detections, severityFilter, showGeofences, enablePulsing, selectedTargetId]);
+  }, [detections, severityFilter, showGeofences, enablePulsing]);
 
-  // Center on selected target
+  // 8. Render Live AIS Vessels (Layer 3) & Vessel Tracks (Layer 4)
+  useEffect(() => {
+    if (!mapInstanceRef.current || !vesselsGroupRef.current || !tracksGroupRef.current) return;
+
+    vesselsGroupRef.current.clearLayers();
+    tracksGroupRef.current.clearLayers();
+
+    if (!showLiveVessels) return;
+
+    const vesselList = Object.values(vesselsMap);
+    const bounds = mapInstanceRef.current.getBounds();
+    const visibleVessels = bounds && bounds.isValid()
+      ? vesselList.filter((v) => bounds.pad(0.25).contains([v.latitude, v.longitude])).slice(0, 350)
+      : vesselList.slice(0, 350);
+
+    visibleVessels.forEach((v) => {
+      const isSelected = selectedVesselMmsi === v.mmsi;
+      const isStale = v.is_stale;
+      const shipName = v.ship_name || `MMSI: ${v.mmsi}`;
+      const speed = v.speed_knots !== null && v.speed_knots !== undefined ? `${v.speed_knots.toFixed(1)} kn` : 'N/A';
+      const course = v.course_deg !== null && v.course_deg !== undefined ? `${v.course_deg.toFixed(0)}°` : null;
+      const heading = v.heading_deg !== null && v.heading_deg !== undefined ? v.heading_deg : (v.course_deg || 0);
+
+      // 8a. Draw Vessel Trajectory Track (Layer 4)
+      if (showVesselTracks && tracksMap[v.mmsi] && tracksMap[v.mmsi].length > 1) {
+        const latlngs = tracksMap[v.mmsi].map((pt) => [pt.latitude, pt.longitude]);
+        const polyline = L.polyline(latlngs, {
+          color: isSelected ? '#38bdf8' : '#0284c7',
+          weight: isSelected ? 3 : 2,
+          opacity: isStale ? 0.4 : 0.75,
+          dashArray: '4, 4',
+        });
+        polyline.addTo(tracksGroupRef.current);
+      }
+
+      // 8b. Distinct Vessel Marker Icon (Layer 3)
+      const rotationDeg = heading || 0;
+      const markerHtml = `
+        <div class="relative flex flex-col items-center justify-center cursor-pointer group" style="opacity: ${isStale ? 0.6 : 1.0}">
+          <!-- Vessel Name Tooltip on Hover -->
+          <div class="absolute -top-6 whitespace-nowrap bg-ocean-950/90 border border-cyan-500/50 text-cyan-300 px-1.5 py-0.2 rounded text-[9px] font-mono font-bold shadow-lg pointer-events-none">
+            ${shipName} ${speed !== 'N/A' ? `(${speed})` : ''}
+          </div>
+
+          <!-- Vessel Icon with Heading Rotation -->
+          <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-600 to-blue-700 border-2 ${isSelected ? 'border-white scale-125' : 'border-cyan-300'} flex items-center justify-center shadow-xl shadow-cyan-500/30 text-white transition-transform duration-300">
+            <span style="display: inline-block; transform: rotate(${rotationDeg}deg); font-size: 14px;">🚢</span>
+          </div>
+
+          ${isStale ? '<span class="absolute -bottom-2 px-1 rounded bg-amber-950 text-amber-400 text-[8px] border border-amber-700/60">STALE</span>' : ''}
+        </div>
+      `;
+
+      const vesselIcon = L.divIcon({
+        html: markerHtml,
+        className: 'custom-vessel-marker',
+        iconSize: [32, 32],
+        iconAnchor: [16, 16],
+        popupAnchor: [0, -18],
+      });
+
+      const marker = L.marker([v.latitude, v.longitude], { icon: vesselIcon });
+
+      // Format Last Update
+      let updateTimeStr = 'Just now';
+      if (v.last_seen_seconds_ago > 0) {
+        if (v.last_seen_seconds_ago < 60) {
+          updateTimeStr = `${Math.round(v.last_seen_seconds_ago)}s ago`;
+        } else {
+          updateTimeStr = `${Math.round(v.last_seen_seconds_ago / 60)}m ago`;
+        }
+      }
+
+      // Popup Content with Real Fields Only
+      const popupDiv = document.createElement('div');
+      popupDiv.className = 'p-3 font-mono text-xs text-slate-200 min-w-[260px] space-y-2';
+      popupDiv.innerHTML = `
+        <div class="flex items-center justify-between border-b border-ocean-800 pb-1.5">
+          <div class="flex items-center space-x-1.5">
+            <span class="text-base">🚢</span>
+            <strong class="text-sm font-bold text-cyan-300 uppercase">${v.ship_name || 'UNNAMED VESSEL'}</strong>
+          </div>
+          <span class="px-2 py-0.5 rounded text-[10px] font-bold ${isStale ? 'bg-amber-950 text-amber-400 border border-amber-800' : 'bg-emerald-950 text-emerald-400 border border-emerald-800'}">
+            ${isStale ? 'STALE DATA' : 'LIVE AIS'}
+          </span>
+        </div>
+
+        <div class="space-y-1 text-[11px] text-slate-300">
+          <div class="flex justify-between">
+            <span class="text-slate-400">MMSI:</span>
+            <span class="font-bold text-white">${v.mmsi}</span>
+          </div>
+          ${v.imo ? `<div class="flex justify-between"><span class="text-slate-400">IMO:</span><span class="text-slate-200">${v.imo}</span></div>` : ''}
+          ${v.ship_type ? `<div class="flex justify-between"><span class="text-slate-400">Type:</span><span class="text-slate-200">${v.ship_type}</span></div>` : ''}
+          <div class="flex justify-between">
+            <span class="text-slate-400">Position:</span>
+            <span class="text-cyan-400 font-semibold">${v.latitude.toFixed(4)}°N, ${v.longitude.toFixed(4)}°E</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-slate-400">Speed (SOG):</span>
+            <span class="font-bold text-emerald-400">${speed}</span>
+          </div>
+          ${course ? `<div class="flex justify-between"><span class="text-slate-400">Course (COG):</span><span class="text-slate-200">${course}</span></div>` : ''}
+          ${v.heading_deg !== null && v.heading_deg !== undefined ? `<div class="flex justify-between"><span class="text-slate-400">Heading:</span><span class="text-slate-200">${v.heading_deg}°</span></div>` : ''}
+          ${v.nav_status ? `<div class="flex justify-between"><span class="text-slate-400">Nav Status:</span><span class="text-slate-200">${v.nav_status}</span></div>` : ''}
+          ${v.destination ? `<div class="flex justify-between"><span class="text-slate-400">Destination:</span><span class="text-slate-200">${v.destination}</span></div>` : ''}
+          ${v.eta ? `<div class="flex justify-between"><span class="text-slate-400">ETA:</span><span class="text-slate-200">${v.eta}</span></div>` : ''}
+          <div class="flex justify-between border-t border-ocean-800/60 pt-1 text-[10px] text-slate-400">
+            <span>Last AIS Report:</span>
+            <span class="text-slate-300 font-semibold">${updateTimeStr}</span>
+          </div>
+        </div>
+      `;
+
+      marker.bindPopup(popupDiv);
+
+      marker.on('click', () => {
+        if (onSelectVessel) onSelectVessel(v.mmsi);
+      });
+
+      marker.addTo(vesselsGroupRef.current);
+    });
+  }, [vesselsMap, tracksMap, showLiveVessels, showVesselTracks, selectedVesselMmsi, mapMoveTick]);
+
+  // Center on selected target only on explicit selection change
   useEffect(() => {
     if (!selectedTargetId || !mapInstanceRef.current) return;
+    if (prevTargetIdRef.current === selectedTargetId) return;
+    prevTargetIdRef.current = selectedTargetId;
+
     const target = detections.find((d) => d.detection_id === selectedTargetId);
     if (target) {
       mapInstanceRef.current.setView(
@@ -377,6 +692,18 @@ export function SonarMap({
       );
     }
   }, [selectedTargetId, detections]);
+
+  // Center on selected vessel only on explicit selection change
+  useEffect(() => {
+    if (!selectedVesselMmsi || !mapInstanceRef.current) return;
+    if (prevVesselMmsiRef.current === selectedVesselMmsi) return;
+    prevVesselMmsiRef.current = selectedVesselMmsi;
+
+    const v = vesselsMap[selectedVesselMmsi];
+    if (v) {
+      mapInstanceRef.current.setView([v.latitude, v.longitude], 16, { animate: true });
+    }
+  }, [selectedVesselMmsi, vesselsMap]);
 
   const handleFitAll = () => {
     if (!mapInstanceRef.current || !markersGroupRef.current) return;
@@ -395,7 +722,7 @@ export function SonarMap({
     <div className={`relative w-full rounded-xl overflow-hidden border border-ocean-800 shadow-2xl bg-ocean-950 flex flex-col transition-all duration-300 ${
       isFullscreen ? 'fixed inset-4 z-[9999] h-[calc(100vh-2rem)]' : 'h-[750px]'
     }`}>
-      {/* Top Map Control Bar - Clean Single-Row Layout with whitespace-nowrap */}
+      {/* Top Map Control Bar - Single-Row Layout with AIS Status HUD */}
       <div className="z-[1000] bg-ocean-900/95 backdrop-blur-md border-b border-ocean-800 px-3 py-2 flex items-center justify-between gap-2 text-xs font-mono overflow-x-auto select-none">
         {/* Severity Filter Controls */}
         <div className="flex items-center space-x-1 bg-ocean-950/90 p-1 rounded-lg border border-ocean-800 flex-shrink-0">
@@ -420,8 +747,60 @@ export function SonarMap({
           })}
         </div>
 
+        {/* Live AIS Status Badge in Toolbar */}
+        <div className="flex-shrink-0">
+          <AisStatusBadge
+            status={aisStatus}
+            vesselCount={Object.keys(vesselsMap).length}
+            lastUpdate={aisLastUpdate}
+          />
+        </div>
+
         {/* Feature Toggles & Basemap Switcher */}
         <div className="flex items-center space-x-1.5 flex-shrink-0">
+          {/* Live AIS Vessels Toggle */}
+          <button
+            onClick={() => setShowLiveVessels((prev) => !prev)}
+            title="Toggle Live AIS Maritime Vessels Layer"
+            className={`px-2 py-1 rounded-lg border transition text-[11px] font-semibold flex items-center space-x-1 whitespace-nowrap ${
+              showLiveVessels
+                ? 'bg-blue-950/90 border-cyan-500 text-cyan-300 shadow-sm shadow-cyan-500/20'
+                : 'bg-ocean-900 border-ocean-800 text-slate-400 hover:text-white'
+            }`}
+          >
+            <Ship className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Vessels: {showLiveVessels ? 'ON' : 'OFF'}</span>
+          </button>
+
+          {/* Vessel Navigation Tracks Toggle */}
+          {showLiveVessels && (
+            <button
+              onClick={() => setShowVesselTracks((prev) => !prev)}
+              title="Toggle Vessel Trajectory History Tracks"
+              className={`px-2 py-1 rounded-lg border transition text-[11px] font-semibold flex items-center space-x-1 whitespace-nowrap ${
+                showVesselTracks
+                  ? 'bg-sky-950/80 border-sky-600/70 text-sky-300 shadow-sm'
+                  : 'bg-ocean-900 border-ocean-800 text-slate-400 hover:text-white'
+              }`}
+            >
+              <TrendingUp className="w-3 h-3 text-sky-400" />
+              <span>Tracks: {showVesselTracks ? 'ON' : 'OFF'}</span>
+            </button>
+          )}
+
+          {/* Geofences Toggle */}
+          <button
+            onClick={() => setShowGeofences((prev) => !prev)}
+            className={`px-2 py-1 rounded-lg border transition text-[11px] font-semibold flex items-center space-x-1 whitespace-nowrap ${
+              showGeofences
+                ? 'bg-emerald-950/70 border-emerald-700/60 text-emerald-400'
+                : 'bg-ocean-900 border-ocean-800 text-slate-400 hover:text-white'
+            }`}
+          >
+            <ShieldAlert className="w-3 h-3" />
+            <span>Geofence: {showGeofences ? 'ON' : 'OFF'}</span>
+          </button>
+
           {/* Ocean Labels Toggle */}
           <button
             onClick={() => setShowOceanLabels((prev) => !prev)}
@@ -433,7 +812,7 @@ export function SonarMap({
             }`}
           >
             <Tag className="w-3 h-3 text-cyan-400" />
-            <span>Labels: {showOceanLabels ? 'ON' : 'OFF'}</span>
+            <span>Labels</span>
           </button>
 
           {/* Nautical Seamarks Overlay Toggle */}
@@ -447,20 +826,7 @@ export function SonarMap({
             }`}
           >
             <Anchor className="w-3 h-3 text-blue-400" />
-            <span>Seamarks: {showSeamarks ? 'ON' : 'OFF'}</span>
-          </button>
-
-          {/* Geofences Toggle */}
-          <button
-            onClick={() => setShowGeofences((prev) => !prev)}
-            className={`px-2 py-1 rounded-lg border transition text-[11px] font-semibold flex items-center space-x-1 whitespace-nowrap ${
-              showGeofences
-                ? 'bg-emerald-950/70 border-emerald-700/60 text-emerald-400'
-                : 'bg-ocean-900 border-ocean-800 text-slate-400 hover:text-white'
-            }`}
-          >
-            <ShieldAlert className="w-3 h-3" />
-            <span>Geofence: {showGeofences ? 'ON' : 'OFF'}</span>
+            <span>Seamarks</span>
           </button>
 
           {/* World View Zoom Out Shortcut */}
@@ -525,12 +891,21 @@ export function SonarMap({
         <span>Alt: {telemetry.altitude_depth_m}m</span>
         <span className="text-slate-600">|</span>
         <span className="text-emerald-400 font-semibold">{detections.length} Targets</span>
+        {Object.keys(vesselsMap).length > 0 && (
+          <>
+            <span className="text-slate-600">|</span>
+            <span className="text-cyan-400 font-semibold flex items-center space-x-1">
+              <Ship className="w-3 h-3" />
+              <span>{Object.keys(vesselsMap).length} AIS Vessels</span>
+            </span>
+          </>
+        )}
       </div>
 
       {/* Bottom Right Severity Legend */}
       <div className="absolute bottom-4 right-4 z-[1000] px-3 py-1.5 rounded-xl bg-ocean-950/90 border border-ocean-800/80 text-[11px] font-mono backdrop-blur-md shadow-2xl space-y-0.5">
         <div className="font-bold text-slate-400 text-[10px] uppercase tracking-wider mb-0.5">
-          Severity Legend
+          Map Legend
         </div>
         <div className="flex items-center space-x-1.5">
           <span className="w-2 h-2 rounded-full bg-rose-500 shadow-sm shadow-rose-500/50"></span>
@@ -543,6 +918,10 @@ export function SonarMap({
         <div className="flex items-center space-x-1.5">
           <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50"></span>
           <span className="text-emerald-400 font-bold">LOW (≥20m)</span>
+        </div>
+        <div className="flex items-center space-x-1.5 border-t border-ocean-800/60 pt-0.5 mt-0.5">
+          <span className="text-xs">🚢</span>
+          <span className="text-cyan-300 font-semibold">Live AIS Vessel</span>
         </div>
       </div>
     </div>
