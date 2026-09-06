@@ -313,7 +313,19 @@ class IncidentIngestionService:
         low = sum(1 for i in incidents if i.severity == IncidentSeverity.LOW)
         pending = sum(1 for i in incidents if not i.is_mapped)
         mapped = sum(1 for i in incidents if i.is_mapped)
+        danger_zones = sum(1 for i in incidents if i.is_mapped and i.potential_danger_zone)
         online_sources = sum(1 for s in self._sources if s.status == "ONLINE")
+
+        # Get active alarms count from risk service
+        from backend.services.incident_risk_service import get_incident_risk_service
+        risk_svc = get_incident_risk_service()
+        active_alarms = risk_svc.get_active_alarms()
+        vessels_in_danger = len(active_alarms)
+
+        # Check AIS connection status
+        from backend.services.ais_service import get_ais_service, AisConnectionStatus
+        ais_svc = get_ais_service()
+        is_live = ais_svc._status == AisConnectionStatus.LIVE
 
         return IncidentMetrics(
             total_incidents=len(incidents),
@@ -323,8 +335,12 @@ class IncidentIngestionService:
             low_count=low,
             pending_confirmation_count=pending,
             mapped_count=mapped,
+            active_danger_zones_count=danger_zones,
+            vessels_in_danger_count=vessels_in_danger,
             sources_online_count=online_sources,
+            total_sources_count=len(self._sources),
             last_ingestion_time=self._last_ingestion_time,
+            is_ais_live=is_live,
         )
 
     def get_sources_status(self) -> List[SourceHealthStatus]:

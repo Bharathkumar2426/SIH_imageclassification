@@ -2,8 +2,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { 
   Layers, ShieldAlert, AlertTriangle, Compass, MapPin, 
-  ZoomIn, ZoomOut, RotateCcw, Globe, Ship, Eye, Radio, ExternalLink 
+  ZoomIn, ZoomOut, RotateCcw, Globe, Ship, Eye, Radio, ExternalLink,
+  Flame, Droplets, LifeBuoy, Waves, Box, Navigation, BellRing, Maximize2
 } from 'lucide-react';
+import { getAisVessels, connectAisWebSocket } from '../../services/aisApi';
+import { triggerTestIncidentBreach } from '../../services/incidentApi';
 
 const CARTO_KEY = 'cb1_2yon_1_9ffb76d43983d1d23dee75e8';
 
@@ -35,31 +38,74 @@ const SEVERITY_COLORS = {
   LOW: '#10b981',
 };
 
+const INCIDENT_ICONS = {
+  Collision: '💥',
+  'Vessel Sinking': '🚢⚓',
+  'Ship Grounding': '⚓',
+  'Vessel Fire / Explosion': '🔥',
+  'Oil Spill / Marine Pollution': '🛢️',
+  'Distress / Search & Rescue': '🛟',
+  'Missing Vessel': '❓',
+  'Navigation Hazard': '⚠️',
+  'Floating Debris / Dangerous Object': '📦',
+  'Tsunami / Swell Surge': '🌊',
+  'High Waves / Storm Surge': '🌊',
+  'Severe Marine Weather / Cyclone': '🌀',
+  'Space Debris / Satellite Impact': '🛰️',
+  Other: '⚠️',
+};
+
+function haversineDistanceKm(lat1, lon1, lat2, lon2) {
+  const r = 6371.0;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return r * c;
+}
+
 export function IncidentMap({
   incidents = [],
   selectedIncident = null,
   onSelectIncident,
+  onOpenConfirmation,
+  onBreachTriggered,
 }) {
   const mapContainerRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const tileLayerRef = useRef(null);
 
   // Layer Groups
-  const incidentsLayerRef = useRef(null);
   const dangerZonesLayerRef = useRef(null);
-  const nearbyVesselsLayerRef = useRef(null);
+  const vesselTracksLayerRef = useRef(null);
+  const liveVesselsLayerRef = useRef(null);
+  const incidentsLayerRef = useRef(null);
 
   const [activeBasemap, setActiveBasemap] = useState('cartoDark');
-  const [showDangerZones, setShowDangerZones] = useState(true);
-  const [showVessels, setShowVessels] = useState(true);
+  const [liveVessels, setLiveVessels] = useState([]);
+  const [isSimulatingBreach, setIsSimulatingBreach] = useState(false);
+
+  // Layer Visibility Controls
+  const [layers, setLayers] = useState({
+    incidents: true,
+    dangerZones: true,
+    liveVessels: true,
+    approachVectors: true,
+    criticalOnly: false,
+  });
 
   // Initialize Map
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
     const map = L.map(mapContainerRef.current, {
-      center: [12.0, 78.0],
-      zoom: 5,
+      center: [15.0, 75.0],
+      zoom: 4,
       minZoom: 2,
       maxZoom: 19,
       zoomControl: false,
@@ -73,10 +119,11 @@ export function IncidentMap({
 
     tileLayerRef.current = tileLayer;
 
-    // Create Layer Groups
+    // Add Layer Groups in correct rendering z-index order
     dangerZonesLayerRef.current = L.layerGroup().addTo(map);
+    vesselTracksLayerRef.current = L.layerGroup().addTo(map);
+    liveVesselsLayerRef.current = L.layerGroup().addTo(map);
     incidentsLayerRef.current = L.layerGroup().addTo(map);
-    nearbyVesselsLayerRef.current = L.layerGroup().addTo(map);
 
     mapInstanceRef.current = map;
 
@@ -86,7 +133,7 @@ export function IncidentMap({
     };
   }, []);
 
-  // Update Basemap
+  // Handle Basemap Switch
   useEffect(() => {
     if (!mapInstanceRef.current || !tileLayerRef.current) return;
     const map = mapInstanceRef.current;
@@ -98,84 +145,148 @@ export function IncidentMap({
     }).addTo(map);
   }, [activeBasemap]);
 
-  // Render Mapped Incidents & Danger Zones
+  // Load and poll live AIS vessels (every 3 seconds) & WebSocket stream
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchVessels = async () => {
+      try {
+        const vessels = await getAisVessels();
+        if (isMounted && Array.isArray(vessels)) {
+          setLiveVessels(vessels);
+        }
+      } catch (err) {
+        console.debug('Failed to fetch live AIS vessels:', err);
+      }
+    };
+
+    fetchVessels();
+    const interval = setInterval(fetchVessels, 3000);
+
+    // Also connect WebSocket for real-time streaming updates
+    const wsController = connectAisWebSocket({
+      onInitialState: (data) => {
+        if (isMounted && data?.vessels) {
+          setLiveVessels(data.vessels);
+        }
+      },
+      onVesselUpdate: (vessel) => {
+        if (!isMounted || !vessel) return;
+        setLiveVessels((prev) => {
+          const idx = prev.findIndex((v) => v.mmsi === vessel.mmsi);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = vessel;
+            return next;
+          }
+          return [...prev, vessel];
+        });
+      },
+    });
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      if (wsController) wsController.disconnect();
+    };
+  }, []);
+
+  // Render All Incidents (Confirmed + Candidate reports) & Danger Zones
   useEffect(() => {
     if (!mapInstanceRef.current || !incidentsLayerRef.current || !dangerZonesLayerRef.current) return;
 
     incidentsLayerRef.current.clearLayers();
     dangerZonesLayerRef.current.clearLayers();
 
-    const mappedIncidents = incidents.filter(
-      (inc) => inc.is_mapped && inc.latitude !== null && inc.longitude !== null
+    if (!layers.incidents) return;
+
+    // Filter all incidents that have valid coordinates
+    let displayIncidents = incidents.filter(
+      (inc) => inc.latitude !== null && inc.longitude !== null
     );
 
-    mappedIncidents.forEach((inc) => {
+    if (layers.criticalOnly) {
+      displayIncidents = displayIncidents.filter((inc) => inc.severity === 'CRITICAL');
+    }
+
+    displayIncidents.forEach((inc) => {
       const color = SEVERITY_COLORS[inc.severity] || '#f59e0b';
       const isSelected = selectedIncident?.incident_id === inc.incident_id;
+      const isMapped = Boolean(inc.is_mapped);
+      const categoryIcon = INCIDENT_ICONS[inc.incident_type] || '⚠️';
+      const dangerRadiusKm = inc.affected_area_radius_km || 5.0;
 
-      // 1. Plot Danger Zone Radius Circle
-      if (showDangerZones && inc.affected_area_radius_km) {
-        const radiusMeters = inc.affected_area_radius_km * 1000.0;
+      // 1. Render Danger Zone Geofence Circle (if dangerZones layer is on)
+      if (layers.dangerZones && (isMapped || isSelected)) {
+        const radiusMeters = dangerRadiusKm * 1000.0;
         const circle = L.circle([inc.latitude, inc.longitude], {
           radius: radiusMeters,
           color: color,
-          weight: isSelected ? 2.5 : 1.5,
-          dashArray: '6, 6',
+          weight: isSelected ? 3 : isMapped ? 2 : 1,
+          dashArray: isMapped ? '5, 5' : '8, 8',
           fillColor: color,
-          fillOpacity: isSelected ? 0.20 : 0.12,
+          fillOpacity: isSelected ? 0.25 : isMapped ? 0.18 : 0.08,
         });
 
         circle.bindTooltip(
-          `<strong>Danger Zone:</strong> ${inc.affected_area_radius_km} km radius (${inc.title})`,
+          `<strong>Danger Zone (${dangerRadiusKm} km):</strong> ${inc.title}`,
           { sticky: true, className: 'leaflet-tooltip-dark' }
         );
+
+        circle.on('click', () => {
+          if (onSelectIncident) onSelectIncident(inc);
+        });
 
         dangerZonesLayerRef.current.addLayer(circle);
       }
 
-      // 2. Plot Incident Marker Icon
+      // 2. Render Incident Marker
+      const markerSize = isSelected ? 40 : isMapped ? 32 : 28;
       const markerHtml = `
         <div style="
-          width: ${isSelected ? '36px' : '28px'};
-          height: ${isSelected ? '36px' : '28px'};
+          width: ${markerSize}px;
+          height: ${markerSize}px;
           border-radius: 50%;
           background: ${color};
-          border: 2.5px solid #ffffff;
+          border: ${isSelected ? '3.5px solid #ffffff' : isMapped ? '2.5px solid #ffffff' : '2px dashed #ffffff'};
           display: flex;
           align-items: center;
           justify-content: center;
-          box-shadow: 0 0 ${isSelected ? '15px' : '8px'} ${color};
+          box-shadow: 0 0 ${isSelected ? '20px' : '10px'} ${color};
           cursor: pointer;
           transition: all 0.2s;
         ">
-          <span style="font-size: ${isSelected ? '16px' : '13px'}; color: #000; font-weight: bold;">⚠️</span>
+          <span style="font-size: ${isSelected ? '18px' : isMapped ? '14px' : '12px'};">${categoryIcon}</span>
         </div>
       `;
 
       const customIcon = L.divIcon({
         html: markerHtml,
         className: 'custom-incident-marker',
-        iconSize: [isSelected ? 36 : 28, isSelected ? 36 : 28],
-        iconAnchor: [isSelected ? 18 : 14, isSelected ? 18 : 14],
+        iconSize: [markerSize, markerSize],
+        iconAnchor: [markerSize / 2, markerSize / 2],
       });
 
       const marker = L.marker([inc.latitude, inc.longitude], { icon: customIcon });
 
       const popupContent = `
-        <div style="font-family: monospace; font-size: 11px; color: #f1f5f9; min-width: 240px; line-height: 1.4;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-            <strong style="color: #38bdf8;">#${inc.incident_id}</strong>
+        <div style="font-family: monospace; font-size: 11px; color: #f1f5f9; min-width: 250px; line-height: 1.4;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <strong style="color: #38bdf8; font-size: 12px;">#${inc.incident_id}</strong>
             <span style="background: ${color}33; color: ${color}; border: 1px solid ${color}88; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 10px;">
               ${inc.severity}
             </span>
           </div>
-          <strong style="font-size: 12px; color: #fff; display: block; margin-bottom: 6px;">${inc.title}</strong>
-          <div style="color: #94a3b8; margin-bottom: 4px;"><strong>Type:</strong> ${inc.incident_type}</div>
-          <div style="color: #94a3b8; margin-bottom: 4px;"><strong>Location:</strong> ${inc.location_text} (${inc.latitude.toFixed(4)}°N, ${inc.longitude.toFixed(4)}°E)</div>
-          <div style="color: #94a3b8; margin-bottom: 4px;"><strong>Danger Radius:</strong> ${inc.affected_area_radius_km || 5} km</div>
+          <strong style="font-size: 12px; color: #fff; display: block; margin-bottom: 4px;">${inc.title}</strong>
+          <div style="color: #94a3b8; margin-bottom: 2px;"><strong>Category:</strong> ${inc.incident_type}</div>
+          <div style="color: #94a3b8; margin-bottom: 2px;"><strong>Location:</strong> ${inc.location_text} (${inc.latitude.toFixed(4)}°N, ${inc.longitude.toFixed(4)}°E)</div>
+          <div style="color: #94a3b8; margin-bottom: 2px;"><strong>Precision:</strong> ${inc.location_precision}</div>
+          <div style="color: #fbbf24; margin-bottom: 4px;"><strong>Danger Zone:</strong> ⭕ ${dangerRadiusKm} km Exclusion</div>
           <div style="color: #34d399; margin-bottom: 6px;"><strong>Sources:</strong> ${inc.sources?.length || 1} verified citations</div>
-          <div style="font-size: 9px; color: #64748b; border-top: 1px solid #334155; padding-top: 4px;">
-            Multi-Source Maritime Intelligence • Operator Confirmed
+          <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #334155; padding-top: 6px; margin-top: 4px;">
+            <span style="font-size: 10px; color: ${isMapped ? '#34d399' : '#fbbf24'}; font-weight: bold;">
+              ${isMapped ? '● ACTIVE ON MAP' : '○ PENDING OPERATOR CONFIRMATION'}
+            </span>
           </div>
         </div>
       `;
@@ -187,102 +298,258 @@ export function IncidentMap({
 
       incidentsLayerRef.current.addLayer(marker);
     });
-  }, [incidents, selectedIncident, showDangerZones]);
+  }, [incidents, selectedIncident, layers]);
 
-  // Render Nearby Live AIS Vessels
+  // Render Live AIS Fleet, Geofence Proximity, and Approach Vectors
   useEffect(() => {
-    if (!mapInstanceRef.current || !nearbyVesselsLayerRef.current) return;
-    nearbyVesselsLayerRef.current.clearLayers();
+    if (!mapInstanceRef.current || !liveVesselsLayerRef.current || !vesselTracksLayerRef.current) return;
 
-    if (!showVessels || !selectedIncident || !selectedIncident.nearby_vessels) return;
+    liveVesselsLayerRef.current.clearLayers();
+    vesselTracksLayerRef.current.clearLayers();
 
-    selectedIncident.nearby_vessels.forEach((v) => {
+    if (!layers.liveVessels || liveVessels.length === 0) return;
+
+    // Get all mapped incidents to evaluate proximity
+    const mappedIncidents = incidents.filter(
+      (inc) => inc.is_mapped && inc.latitude !== null && inc.longitude !== null
+    );
+
+    liveVessels.forEach((v) => {
+      if (v.latitude === null || v.longitude === null) return;
+
+      // Check proximity to every mapped incident danger zone
+      let closestDist = Infinity;
+      let closestIncident = null;
+      let isInsideZone = false;
+      let isApproaching = false;
+
+      mappedIncidents.forEach((inc) => {
+        const d = haversineDistanceKm(v.latitude, v.longitude, inc.latitude, inc.longitude);
+        const radius = inc.affected_area_radius_km || 5.0;
+        if (d < closestDist) {
+          closestDist = d;
+          closestIncident = inc;
+        }
+        if (d <= radius) {
+          isInsideZone = true;
+          closestIncident = inc;
+        } else if (d <= (radius + 5.0)) {
+          isApproaching = true;
+          if (!closestIncident) closestIncident = inc;
+        }
+      });
+
+      // Vessel Marker Styling
+      const color = isInsideZone ? '#ef4444' : isApproaching ? '#f59e0b' : '#38bdf8';
+      const size = isInsideZone ? 28 : isApproaching ? 24 : 20;
+
       const vIconHtml = `
         <div style="
-          width: 22px;
-          height: 22px;
+          width: ${size}px;
+          height: ${size}px;
           border-radius: 50%;
-          background: #0284c7;
-          border: 1.5px solid #38bdf8;
+          background: ${color};
+          border: ${isInsideZone ? '2.5px solid #ffffff' : '1.5px solid #ffffff'};
           display: flex;
           align-items: center;
           justify-content: center;
-          box-shadow: 0 0 6px #38bdf8;
+          box-shadow: 0 0 ${isInsideZone ? '14px #ef4444' : '4px #38bdf8'};
+          transform: rotate(${v.course_deg || 0}deg);
         ">
-          <span style="font-size: 11px;">🚢</span>
+          <span style="font-size: ${isInsideZone ? '13px' : '10px'};">🚢</span>
         </div>
       `;
 
       const vIcon = L.divIcon({
         html: vIconHtml,
         className: 'custom-vessel-marker',
-        iconSize: [22, 22],
-        iconAnchor: [11, 11],
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size / 2],
       });
 
       const vMarker = L.marker([v.latitude, v.longitude], { icon: vIcon });
-      vMarker.bindTooltip(
-        `<strong>${v.ship_name}</strong> (${v.speed_knots} kn) • Dist: ${v.distance_km} km to hazard`,
-        { sticky: true }
-      );
 
-      nearbyVesselsLayerRef.current.addLayer(vMarker);
+      const vesselTooltip = isInsideZone
+        ? `<strong style="color: #ef4444;">🚨 INSIDE DANGER ZONE:</strong> ${v.ship_name || v.mmsi}<br/>Hazard: ${closestIncident?.title}<br/>Speed: ${v.speed_knots || 0} kn | Course: ${v.course_deg || 0}°`
+        : isApproaching
+        ? `<strong style="color: #f59e0b;">⚠️ APPROACHING HAZARD:</strong> ${v.ship_name || v.mmsi}<br/>Distance: ${closestDist.toFixed(1)} km to ${closestIncident?.title}`
+        : `<strong>${v.ship_name || 'Live AIS Vessel'}</strong> (MMSI: ${v.mmsi})<br/>Speed: ${v.speed_knots || 0} kn | Course: ${v.course_deg || 0}°`;
+
+      vMarker.bindTooltip(vesselTooltip, { sticky: true, className: 'leaflet-tooltip-dark' });
+
+      liveVesselsLayerRef.current.addLayer(vMarker);
+
+      // Draw Approach Vector Line to Incident Epicenter
+      if (layers.approachVectors && (isInsideZone || isApproaching) && closestIncident) {
+        const line = L.polyline(
+          [
+            [v.latitude, v.longitude],
+            [closestIncident.latitude, closestIncident.longitude],
+          ],
+          {
+            color: color,
+            weight: isInsideZone ? 2.5 : 1.5,
+            dashArray: isInsideZone ? '4, 4' : '8, 8',
+            opacity: isInsideZone ? 0.9 : 0.6,
+          }
+        );
+        vesselTracksLayerRef.current.addLayer(line);
+      }
     });
-  }, [selectedIncident, showVessels]);
+  }, [liveVessels, incidents, layers]);
 
   // Center on Selected Incident
   useEffect(() => {
     if (!mapInstanceRef.current || !selectedIncident) return;
     if (selectedIncident.latitude !== null && selectedIncident.longitude !== null) {
-      mapInstanceRef.current.flyTo([selectedIncident.latitude, selectedIncident.longitude], 8, {
+      mapInstanceRef.current.flyTo([selectedIncident.latitude, selectedIncident.longitude], 7.5, {
         duration: 1.2,
       });
     }
   }, [selectedIncident?.incident_id]);
 
+  // Fit All Incidents View
+  const handleFitAllIncidents = () => {
+    if (!mapInstanceRef.current) return;
+    const coords = incidents
+      .filter((i) => i.latitude !== null && i.longitude !== null)
+      .map((i) => [i.latitude, i.longitude]);
+    if (coords.length > 0) {
+      const bounds = L.latLngBounds(coords);
+      mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 8 });
+    } else {
+      mapInstanceRef.current.flyTo([15.0, 75.0], 4);
+    }
+  };
+
+  // Simulate Vessel Geofence Breach Test
+  const handleTriggerTestBreach = async () => {
+    try {
+      setIsSimulatingBreach(true);
+      const incId = selectedIncident?.incident_id || null;
+      await triggerTestIncidentBreach(incId);
+      if (onBreachTriggered) onBreachTriggered();
+    } catch (err) {
+      console.error('Failed to trigger test breach:', err);
+    } finally {
+      setIsSimulatingBreach(false);
+    }
+  };
+
+  const incidentsCount = incidents.filter((i) => i.latitude !== null && i.longitude !== null).length;
+  const mappedCount = incidents.filter((i) => i.is_mapped && i.latitude !== null).length;
+
   return (
-    <div className="relative w-full h-[620px] rounded-2xl overflow-hidden border border-ocean-800 shadow-2xl bg-ocean-950 font-mono">
+    <div className="relative w-full h-[650px] rounded-3xl overflow-hidden border border-ocean-800 shadow-2xl bg-ocean-950 font-mono">
       {/* Leaflet Map Canvas */}
       <div ref={mapContainerRef} className="w-full h-full" />
 
-      {/* Top Map HUD Bar */}
-      <div className="absolute top-3 left-3 z-[1000] flex flex-wrap items-center gap-2 bg-ocean-900/90 backdrop-blur-md px-3 py-2 rounded-xl border border-ocean-750 shadow-lg text-xs">
-        <div className="flex items-center space-x-2 pr-2 border-r border-ocean-750">
+      {/* Top Map HUD Bar: Title & Dynamic Layer Controls */}
+      <div className="absolute top-3 left-3 z-[1000] flex flex-wrap items-center gap-2 bg-ocean-900/95 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-ocean-750 shadow-2xl text-xs">
+        <div className="flex items-center space-x-2 pr-3 border-r border-ocean-750">
           <Radio className="w-4 h-4 text-cyan-400 animate-pulse" />
-          <strong className="text-white">INCIDENT INTELLIGENCE MAP</strong>
+          <strong className="text-white tracking-wide">INCIDENT INTELLIGENCE MAP</strong>
         </div>
 
-        {/* Layer Visibility Toggles */}
-        <div className="flex items-center space-x-2 text-[11px]">
-          <label className="flex items-center space-x-1 cursor-pointer text-slate-300 hover:text-white">
+        {/* Layer Toggles */}
+        <div className="flex flex-wrap items-center gap-3 text-[11px]">
+          <label className="flex items-center space-x-1.5 cursor-pointer text-slate-300 hover:text-white transition">
             <input
               type="checkbox"
-              checked={showDangerZones}
-              onChange={(e) => setShowDangerZones(e.target.checked)}
-              className="accent-amber-500 rounded"
-            />
-            <span>Danger Zones</span>
-          </label>
-
-          <label className="flex items-center space-x-1 cursor-pointer text-slate-300 hover:text-white">
-            <input
-              type="checkbox"
-              checked={showVessels}
-              onChange={(e) => setShowVessels(e.target.checked)}
+              checked={layers.incidents}
+              onChange={(e) => setLayers({ ...layers, incidents: e.target.checked })}
               className="accent-cyan-500 rounded"
             />
-            <span>Live AIS Correlation</span>
+            <span>All Incidents ({incidentsCount})</span>
+          </label>
+
+          <label className="flex items-center space-x-1.5 cursor-pointer text-slate-300 hover:text-white transition">
+            <input
+              type="checkbox"
+              checked={layers.dangerZones}
+              onChange={(e) => setLayers({ ...layers, dangerZones: e.target.checked })}
+              className="accent-amber-500 rounded"
+            />
+            <span>Danger Zones ({mappedCount})</span>
+          </label>
+
+          <label className="flex items-center space-x-1.5 cursor-pointer text-slate-300 hover:text-white transition">
+            <input
+              type="checkbox"
+              checked={layers.liveVessels}
+              onChange={(e) => setLayers({ ...layers, liveVessels: e.target.checked })}
+              className="accent-cyan-400 rounded"
+            />
+            <span>Live AIS Vessels ({liveVessels.length})</span>
+          </label>
+
+          <label className="flex items-center space-x-1.5 cursor-pointer text-slate-300 hover:text-white transition">
+            <input
+              type="checkbox"
+              checked={layers.approachVectors}
+              onChange={(e) => setLayers({ ...layers, approachVectors: e.target.checked })}
+              className="accent-emerald-400 rounded"
+            />
+            <span>Approach Vectors</span>
+          </label>
+
+          <label className="flex items-center space-x-1.5 cursor-pointer text-slate-300 hover:text-white transition">
+            <input
+              type="checkbox"
+              checked={layers.criticalOnly}
+              onChange={(e) => setLayers({ ...layers, criticalOnly: e.target.checked })}
+              className="accent-rose-500 rounded"
+            />
+            <span className="text-rose-400 font-bold">Critical Only</span>
           </label>
         </div>
       </div>
 
-      {/* Basemap Switcher */}
-      <div className="absolute bottom-3 left-3 z-[1000] bg-ocean-900/90 backdrop-blur-md p-1 rounded-xl border border-ocean-750 shadow-lg flex items-center space-x-1 text-xs">
+      {/* Test Geofence Breach Button (Top Right Action) */}
+      <div className="absolute top-3 right-16 z-[1000] flex items-center space-x-2">
+        <button
+          onClick={handleTriggerTestBreach}
+          disabled={isSimulatingBreach}
+          className="px-3 py-2 rounded-xl bg-rose-950/90 hover:bg-rose-900 text-rose-300 border border-rose-600/70 text-xs font-bold flex items-center space-x-1.5 shadow-xl transition backdrop-blur-md"
+          title="Simulate a live vessel entering a danger zone to verify real-time SOS alarm trigger"
+        >
+          <BellRing className={`w-3.5 h-3.5 text-rose-400 ${isSimulatingBreach ? 'animate-spin' : 'animate-bounce'}`} />
+          <span>{isSimulatingBreach ? 'Triggering...' : 'Test Vessel Breach SOS'}</span>
+        </button>
+      </div>
+
+      {/* Map Zoom & Bounds Controls (Top Right) */}
+      <div className="absolute top-3 right-3 z-[1000] flex flex-col space-y-1.5 bg-ocean-900/95 backdrop-blur-md p-1.5 rounded-xl border border-ocean-750 shadow-xl">
+        <button
+          onClick={() => mapInstanceRef.current?.zoomIn()}
+          className="p-2 rounded-lg bg-ocean-800 hover:bg-ocean-750 text-slate-200 hover:text-white transition"
+          title="Zoom In"
+        >
+          <ZoomIn className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => mapInstanceRef.current?.zoomOut()}
+          className="p-2 rounded-lg bg-ocean-800 hover:bg-ocean-750 text-slate-200 hover:text-white transition"
+          title="Zoom Out"
+        >
+          <ZoomOut className="w-4 h-4" />
+        </button>
+        <button
+          onClick={handleFitAllIncidents}
+          className="p-2 rounded-lg bg-ocean-800 hover:bg-ocean-750 text-cyan-400 hover:text-cyan-300 transition"
+          title="Fit All Incidents to View"
+        >
+          <Maximize2 className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Basemap Switcher (Bottom Left) */}
+      <div className="absolute bottom-3 left-3 z-[1000] bg-ocean-900/95 backdrop-blur-md p-1 rounded-xl border border-ocean-750 shadow-xl flex items-center space-x-1 text-xs">
         {Object.entries(BASEMAPS).map(([key, bm]) => (
           <button
             key={key}
             onClick={() => setActiveBasemap(key)}
-            className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
+            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition ${
               activeBasemap === key
                 ? 'bg-cyan-500 text-black shadow-sm'
                 : 'text-slate-400 hover:text-white hover:bg-ocean-800'
@@ -293,29 +560,32 @@ export function IncidentMap({
         ))}
       </div>
 
-      {/* Map Zoom Controls */}
-      <div className="absolute top-3 right-3 z-[1000] flex flex-col space-y-1.5 bg-ocean-900/90 backdrop-blur-md p-1.5 rounded-xl border border-ocean-750 shadow-lg">
-        <button
-          onClick={() => mapInstanceRef.current?.zoomIn()}
-          className="p-1.5 rounded-lg bg-ocean-800 hover:bg-ocean-750 text-slate-200 hover:text-white transition"
-          title="Zoom In"
-        >
-          <ZoomIn className="w-4 h-4" />
-        </button>
-        <button
-          onClick={() => mapInstanceRef.current?.zoomOut()}
-          className="p-1.5 rounded-lg bg-ocean-800 hover:bg-ocean-750 text-slate-200 hover:text-white transition"
-          title="Zoom Out"
-        >
-          <ZoomOut className="w-4 h-4" />
-        </button>
-        <button
-          onClick={() => mapInstanceRef.current?.flyTo([12.0, 78.0], 5)}
-          className="p-1.5 rounded-lg bg-ocean-800 hover:bg-ocean-750 text-cyan-400 hover:text-cyan-300 transition"
-          title="Reset View"
-        >
-          <RotateCcw className="w-4 h-4" />
-        </button>
+      {/* Map Legend Overlay (Bottom Right) */}
+      <div className="absolute bottom-3 right-3 z-[1000] bg-ocean-900/95 backdrop-blur-md p-3 rounded-2xl border border-ocean-750 shadow-xl text-[10px] text-slate-300 space-y-1.5 hidden sm:block">
+        <div className="font-bold text-slate-400 uppercase text-[9px] border-b border-ocean-800 pb-1 flex items-center justify-between">
+          <span>Map Legend</span>
+          <span className="text-cyan-400">{liveVessels.length} Vessels</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
+          <span>Critical Hazard Marker</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+          <span>High Risk Incident Marker</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <span className="w-2.5 h-2.5 rounded-full border border-dashed border-amber-400 bg-amber-500/20" />
+          <span>Danger Zone Perimeter</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <span>🚢</span>
+          <span>Live AIS Vessel (Real-Time)</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping" />
+          <span className="text-rose-400 font-bold">Vessel in Danger Zone</span>
+        </div>
       </div>
     </div>
   );

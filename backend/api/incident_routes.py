@@ -15,6 +15,7 @@ from backend.models.incident_schemas import (
     IncidentConfirmationRequest,
     IncidentDismissRequest,
     IncidentMetrics,
+    IncidentProximityAlarm,
     NearbyVesselRisk,
     SourceHealthStatus,
 )
@@ -75,6 +76,49 @@ async def get_sources_status(
     return service.get_sources_status()
 
 
+@router.get("/alarms/active", response_model=List[IncidentProximityAlarm], summary="Get active live vessel danger-zone breach alarms")
+async def get_active_alarms(
+    risk_service: IncidentRiskService = Depends(get_incident_risk_service),
+    ingestion_service: IncidentIngestionService = Depends(get_incident_ingestion_service),
+) -> List[IncidentProximityAlarm]:
+    """Returns current active proximity and danger-zone alarms evaluated across all active incidents."""
+    incidents = ingestion_service.get_all_incidents()
+    return risk_service.evaluate_all_active_incidents(incidents)
+
+
+@router.post("/alarms/test-breach", response_model=IncidentProximityAlarm, summary="Simulate a real-time vessel geofence breach alert")
+async def trigger_test_incident_breach(
+    incident_id: Optional[str] = Query(None, description="Target incident ID to breach"),
+    risk_service: IncidentRiskService = Depends(get_incident_risk_service),
+    ingestion_service: IncidentIngestionService = Depends(get_incident_ingestion_service),
+) -> IncidentProximityAlarm:
+    """Simulates an emergency live vessel entering an active danger zone to verify real-time SOS alerts."""
+    target_inc = ingestion_service.get_incident_by_id(incident_id) if incident_id else None
+    if not target_inc:
+        mapped_incidents = [i for i in ingestion_service.get_all_incidents() if i.is_mapped and i.latitude is not None]
+        target_inc = mapped_incidents[0] if mapped_incidents else None
+    return risk_service.trigger_test_incident_breach(target_inc)
+
+
+@router.post("/alarms/{alarm_id}/dismiss", summary="Dismiss an active proximity alarm")
+async def dismiss_alarm(
+    alarm_id: str,
+    risk_service: IncidentRiskService = Depends(get_incident_risk_service),
+) -> Dict[str, Any]:
+    """Acknowledges and clears an active alarm."""
+    success = risk_service.clear_alarm(alarm_id)
+    return {"status": "cleared" if success else "not_found", "alarm_id": alarm_id}
+
+
+@router.post("/alarms/clear-all", summary="Clear all active proximity alarms")
+async def clear_all_alarms(
+    risk_service: IncidentRiskService = Depends(get_incident_risk_service),
+) -> Dict[str, Any]:
+    """Clears all active danger zone proximity alarms."""
+    count = risk_service.clear_all_alarms()
+    return {"status": "cleared", "count": count}
+
+
 @router.get("/{incident_id}", response_model=Incident, summary="Get incident dossier by ID")
 async def get_incident(
     incident_id: str,
@@ -109,6 +153,27 @@ async def confirm_map_incident(
             status_code=400,
             detail=f"Cannot mark incident {incident_id} on map. Incident must exist and have verified coordinates.",
         )
+
+    # Sync geofences with AIS service
+    try:
+        from backend.services.ais_service import get_ais_service
+        ais_svc = get_ais_service()
+        mapped_incidents = [i for i in service.get_all_incidents() if i.is_mapped and i.latitude is not None]
+        geofences = [
+            {
+                "id": hash(i.incident_id) % 100000,
+                "class_name": i.title,
+                "latitude": i.latitude,
+                "longitude": i.longitude,
+                "radius_meters": (i.affected_area_radius_km or 5.0) * 1000.0,
+                "severity": i.severity.value if hasattr(i.severity, "value") else str(i.severity),
+            }
+            for i in mapped_incidents
+        ]
+        ais_svc.set_active_geofences(geofences)
+    except Exception as e:
+        logger.warning(f"Could not sync incident geofences to AIS service: {e}")
+
     return inc
 
 

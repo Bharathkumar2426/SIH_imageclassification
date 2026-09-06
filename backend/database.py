@@ -41,6 +41,26 @@ async def init_db() -> None:
         except Exception:
             pass
 
+        # Check and migrate columns in maritime_incidents table if needed
+        try:
+            res = await conn.execute(text("PRAGMA table_info(maritime_incidents)"))
+            inc_cols = [row[1] for row in res.fetchall()]
+            if inc_cols:
+                if "coordinate_source" not in inc_cols:
+                    await conn.execute(text("ALTER TABLE maritime_incidents ADD COLUMN coordinate_source VARCHAR(128)"))
+                if "time_source" not in inc_cols:
+                    await conn.execute(text("ALTER TABLE maritime_incidents ADD COLUMN time_source VARCHAR(128)"))
+                if "severity_source" not in inc_cols:
+                    await conn.execute(text("ALTER TABLE maritime_incidents ADD COLUMN severity_source VARCHAR(128)"))
+                if "danger_radius_source" not in inc_cols:
+                    await conn.execute(text("ALTER TABLE maritime_incidents ADD COLUMN danger_radius_source VARCHAR(128)"))
+                if "danger_radius_basis" not in inc_cols:
+                    await conn.execute(text("ALTER TABLE maritime_incidents ADD COLUMN danger_radius_basis TEXT"))
+                if "author" not in inc_cols:
+                    await conn.execute(text("ALTER TABLE maritime_incidents ADD COLUMN author VARCHAR(128)"))
+        except Exception:
+            pass
+
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency that yields an asynchronous database session."""

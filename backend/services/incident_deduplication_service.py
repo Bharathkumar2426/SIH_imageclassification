@@ -52,6 +52,8 @@ class IncidentDeduplicationService:
                 source_url=item.source_url,
                 source_trust_level=item.source_trust_level,
                 published_at=item.published_at,
+                event_time=item.event_time,
+                author=item.raw_metadata.get("author") or item.raw_metadata.get("outlet"),
                 raw_title=item.raw_title,
                 snippet=item.raw_text[:250],
             )
@@ -72,6 +74,14 @@ class IncidentDeduplicationService:
                 elif len(existing.sources) >= 2:
                     existing.verification_status = VerificationStatus.CORROBORATED
                     existing.confidence = min(0.95, existing.confidence + 0.08)
+
+                # Upgrade precision if exact coordinates become available from new source
+                if features.get("location_precision") == LocationPrecision.EXACT and existing.location_precision != LocationPrecision.EXACT:
+                    existing.latitude = features.get("latitude")
+                    existing.longitude = features.get("longitude")
+                    existing.location_text = features.get("location_text")
+                    existing.location_precision = LocationPrecision.EXACT
+                    existing.coordinate_source = features.get("coordinate_source")
 
                 # Merge keywords and MMSIs
                 for kw in features.get("keywords", []):
@@ -103,20 +113,25 @@ class IncidentDeduplicationService:
                     source_trust_level=item.source_trust_level,
                     sources=[source_item],
                     published_at=item.published_at,
-                    event_time=item.event_time or item.published_at,
+                    event_time=item.event_time,
                     last_updated=datetime.now(timezone.utc).isoformat(),
                     latitude=features.get("latitude"),
                     longitude=features.get("longitude"),
                     location_text=features.get("location_text", "Unknown Location"),
                     location_precision=features.get("location_precision", LocationPrecision.UNKNOWN),
-                    location_source=item.source_name,
+                    location_source=features.get("location_source", item.source_name),
+                    coordinate_source=features.get("coordinate_source"),
+                    time_source=features.get("time_source"),
+                    severity_source=features.get("severity_source"),
                     severity=features.get("severity", IncidentSeverity.MEDIUM),
                     confidence=features.get("confidence", 0.75),
                     verification_status=verif,
                     status=IncidentStatus.ACTIVE,
                     affected_area_radius_km=features.get("affected_area_radius_km"),
                     potential_danger_zone=features.get("potential_danger_zone", False),
-                    is_mapped=False,
+                    danger_radius_source=features.get("danger_radius_source"),
+                    danger_radius_basis=features.get("danger_radius_basis"),
+                    is_mapped=bool(verif == VerificationStatus.CONFIRMED_OFFICIAL and features.get("latitude") is not None),
                     is_dismissed=False,
                     related_vessel_count=features.get("related_vessel_count", 0),
                     related_mmsi=features.get("related_mmsi", []),

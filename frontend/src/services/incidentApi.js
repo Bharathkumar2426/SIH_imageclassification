@@ -74,3 +74,36 @@ export async function getNearbyVessels(incidentId) {
   if (!res.ok) throw new Error(`Failed to fetch nearby vessels: ${res.statusText}`);
   return res.json();
 }
+
+export async function getActiveAlarms() {
+  const res = await fetch(`${API_BASE}/alarms/active`);
+  if (!res.ok) throw new Error(`Failed to fetch active alarms: ${res.statusText}`);
+  return res.json();
+}
+
+export async function dismissAlarm(alarmId) {
+  const res = await fetch(`${API_BASE}/alarms/${alarmId}/dismiss`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`Failed to dismiss alarm: ${res.statusText}`);
+  return res.json();
+}
+
+export async function clearAllAlarms() {
+  const res = await fetch(`${API_BASE}/alarms/clear-all`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`Failed to clear alarms: ${res.statusText}`);
+  return res.json();
+}
+
+export async function triggerTestIncidentBreach(incidentId = null) {
+  const url = incidentId ? `${API_BASE}/alarms/test-breach?incident_id=${incidentId}` : `${API_BASE}/alarms/test-breach`;
+  const res = await fetch(url, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`Failed to trigger test incident breach: ${res.statusText}`);
+  return res.json();
+}
+
+

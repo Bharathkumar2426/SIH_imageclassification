@@ -71,6 +71,18 @@ def test_incident_pipeline():
             v0 = nearby[0]
             print(f"  Closest Vessel: {v0['ship_name']} (MMSI: {v0['vessel_mmsi']}) - Dist: {v0['distance_km']} km, Speed: {v0['speed_knots']} kn, Risk: {v0['risk_level']}")
 
+    print("\n=== 6. Testing GET /api/incidents/alarms/active ===")
+    r = requests.get(f"{BASE_URL}/incidents/alarms/active")
+    assert r.status_code == 200, f"Failed: {r.text}"
+    alarms = r.json()
+    print(f"Active Proximity Alarms: {len(alarms)}")
+    if alarms:
+        a0 = alarms[0]
+        print(f"  Sample Alarm: [{a0['alarm_level']}] Vessel {a0['ship_name']} (MMSI {a0['vessel_mmsi']}) - Dist {a0['distance_km']} km to #{a0['incident_id']}")
+        assert "alarm_id" in a0
+        assert "alarm_level" in a0
+        assert "vessel_mmsi" in a0
+
     print("\n[SUCCESS] ALL MARITIME INCIDENT INTELLIGENCE API TESTS PASSED PERFECTLY!")
 
 if __name__ == "__main__":

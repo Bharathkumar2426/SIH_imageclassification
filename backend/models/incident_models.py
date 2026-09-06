@@ -25,7 +25,7 @@ from backend.models.incident_schemas import (
 
 
 class MaritimeIncidentRecord(Base):
-    """SQLAlchemy model for maritime incidents and danger zones."""
+    """SQLAlchemy model for maritime incidents, danger zones, and provenance audit."""
 
     __tablename__ = "maritime_incidents"
 
@@ -46,12 +46,17 @@ class MaritimeIncidentRecord(Base):
     location_text: Mapped[str] = mapped_column(String(255), default="Unknown Location")
     location_precision: Mapped[str] = mapped_column(String(32), default=LocationPrecision.UNKNOWN.value)
     location_source: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    coordinate_source: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    time_source: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    severity_source: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     severity: Mapped[str] = mapped_column(String(32), default=IncidentSeverity.MEDIUM.value, index=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.75)
     verification_status: Mapped[str] = mapped_column(String(32), default=VerificationStatus.REPORTED.value)
     status: Mapped[str] = mapped_column(String(32), default=IncidentStatus.ACTIVE.value, index=True)
     affected_area_radius_km: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     potential_danger_zone: Mapped[bool] = mapped_column(Boolean, default=False)
+    danger_radius_source: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    danger_radius_basis: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     is_mapped: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     is_dismissed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     related_vessel_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -132,12 +137,17 @@ class MaritimeIncidentRecord(Base):
             location_text=self.location_text,
             location_precision=loc_prec,
             location_source=self.location_source,
+            coordinate_source=self.coordinate_source,
+            time_source=self.time_source,
+            severity_source=self.severity_source,
             severity=sev,
             confidence=self.confidence,
             verification_status=verif,
             status=stat,
             affected_area_radius_km=self.affected_area_radius_km,
             potential_danger_zone=self.potential_danger_zone,
+            danger_radius_source=self.danger_radius_source,
+            danger_radius_basis=self.danger_radius_basis,
             is_mapped=self.is_mapped,
             is_dismissed=self.is_dismissed,
             related_vessel_count=self.related_vessel_count,
