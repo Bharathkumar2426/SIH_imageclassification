@@ -175,8 +175,6 @@ class AisService:
     def set_active_geofences(self, geofences: List[Dict[str, Any]]):
         """Updates active debris geofences used for vessel proximity safety checks."""
         self._active_geofences = geofences or []
-        # Re-evaluate proximity with updated geofences
-        self._evaluate_all_vessel_proximities()
 
     async def register_client(self, websocket: WebSocket):
         """Registers a frontend client WebSocket connection for real-time AIS events."""

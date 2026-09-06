@@ -10,6 +10,10 @@ import {
   getAisStatus, getAisVessels, getAisTracks, getAisAlerts, 
   syncDebrisGeofences, connectAisWebSocket 
 } from '../services/aisApi';
+import {
+  getDemoStatus, getDemoVessels, getDemoTracks, getDemoAlerts,
+  syncDemoGeofences, connectAisDemoWebSocket
+} from '../services/aisDemoApi';
 
 const SEVERITY_CONFIG = {
   EXTREME: {
@@ -104,6 +108,7 @@ export function SonarMap({
   geospatialData,
   selectedTargetId,
   selectedVesselMmsi,
+  aisMode = 'LIVE',
   onSelectTarget,
   onSelectVessel,
   onSwitchToAnalysis,
@@ -287,46 +292,89 @@ export function SonarMap({
         radius_meters: d.geofence ? d.geofence.radius_meters : 25.0,
         severity: d.severity || 'LOW',
       }));
-      syncDebrisGeofences(gfs);
+      if (aisMode === 'DEMO') {
+        syncDemoGeofences(gfs);
+      } else {
+        syncDebrisGeofences(gfs);
+      }
     }
-  }, [detections]);
+  }, [detections, aisMode]);
 
-  // 6. Connect to Live AIS WebSocket Stream & Setup Fallback Polling
+  // 6. Connect to Live AIS or Demo WebSocket Stream & Setup Initial Fetching
   useEffect(() => {
     let isMounted = true;
+    const isDemo = aisMode === 'DEMO';
 
-    // Initial snapshot fetch via REST
+    // Clear previous vessels & tracks when switching modes
+    setVesselsMap({});
+    setTracksMap({});
+    setActiveAlerts([]);
+    if (onAlertsChange) onAlertsChange([]);
+
     const fetchInitialData = async () => {
       try {
-        const [statusData, vesselsData, tracksData, alertsData] = await Promise.all([
-          getAisStatus().catch(() => null),
-          getAisVessels().catch(() => []),
-          getAisTracks().catch(() => ({})),
-          getAisAlerts().catch(() => []),
-        ]);
+        if (isDemo) {
+          const [statusData, vesselsData, tracksData, alertsData] = await Promise.all([
+            getDemoStatus().catch(() => null),
+            getDemoVessels().catch(() => []),
+            getDemoTracks().catch(() => ({})),
+            getDemoAlerts().catch(() => []),
+          ]);
 
-        if (!isMounted) return;
+          if (!isMounted) return;
 
-        if (statusData) {
-          setAisStatus(statusData.status || 'OFFLINE');
-          setAisLastUpdate(statusData.last_update);
-        }
+          if (statusData) {
+            setAisStatus('DEMO_ACTIVE');
+            setAisLastUpdate(new Date().toISOString());
+          }
 
-        if (Array.isArray(vesselsData)) {
-          const mapObj = {};
-          vesselsData.forEach((v) => {
-            if (v && v.mmsi) mapObj[v.mmsi] = v;
-          });
-          setVesselsMap(mapObj);
-        }
+          if (Array.isArray(vesselsData)) {
+            const mapObj = {};
+            vesselsData.forEach((v) => {
+              if (v && v.mmsi) mapObj[v.mmsi] = v;
+            });
+            setVesselsMap(mapObj);
+          }
 
-        if (tracksData) {
-          setTracksMap(tracksData);
-        }
+          if (tracksData) {
+            setTracksMap(tracksData);
+          }
 
-        if (Array.isArray(alertsData)) {
-          setActiveAlerts(alertsData);
-          if (onAlertsChange) onAlertsChange(alertsData);
+          if (Array.isArray(alertsData)) {
+            setActiveAlerts(alertsData);
+            if (onAlertsChange) onAlertsChange(alertsData);
+          }
+        } else {
+          const [statusData, vesselsData, tracksData, alertsData] = await Promise.all([
+            getAisStatus().catch(() => null),
+            getAisVessels().catch(() => []),
+            getAisTracks().catch(() => ({})),
+            getAisAlerts().catch(() => []),
+          ]);
+
+          if (!isMounted) return;
+
+          if (statusData) {
+            setAisStatus(statusData.status || 'OFFLINE');
+            setAisLastUpdate(statusData.last_update);
+          }
+
+          if (Array.isArray(vesselsData)) {
+            const mapObj = {};
+            vesselsData.forEach((v) => {
+              if (v && v.mmsi) mapObj[v.mmsi] = v;
+            });
+            setVesselsMap(mapObj);
+          }
+
+          if (tracksData) {
+            setTracksMap(tracksData);
+          }
+
+          if (Array.isArray(alertsData)) {
+            setActiveAlerts(alertsData);
+            if (onAlertsChange) onAlertsChange(alertsData);
+          }
         }
       } catch (err) {
         console.debug('AIS initial fetch notice:', err);
@@ -336,90 +384,125 @@ export function SonarMap({
     fetchInitialData();
 
     // WebSocket real-time subscription
-    const wsClient = connectAisWebSocket({
-      onInitialState: (data) => {
-        if (!isMounted) return;
-        if (data.status) setAisStatus(data.status);
-        if (data.timestamp) setAisLastUpdate(data.timestamp);
+    let wsClient = null;
 
-        if (Array.isArray(data.vessels)) {
-          const mapObj = {};
-          data.vessels.forEach((v) => {
-            if (v && v.mmsi) mapObj[v.mmsi] = v;
-          });
-          setVesselsMap(mapObj);
-        }
+    if (isDemo) {
+      wsClient = connectAisDemoWebSocket({
+        onSnapshot: (data) => {
+          if (!isMounted) return;
+          if (data.is_running !== undefined) {
+            setAisStatus(data.is_running ? 'DEMO_ACTIVE' : 'DEMO_PAUSED');
+          }
+          if (data.timestamp) setAisLastUpdate(data.timestamp);
 
-        if (Array.isArray(data.alerts)) {
-          setActiveAlerts(data.alerts);
-          if (onAlertsChange) onAlertsChange(data.alerts);
-        }
-      },
-      onStatusChange: (newStatus) => {
-        if (!isMounted) return;
-        setAisStatus(newStatus);
-      },
-      onVesselUpdate: (vessel) => {
-        if (!isMounted || !vessel || !vessel.mmsi) return;
-        setVesselsMap((prev) => ({
-          ...prev,
-          [vessel.mmsi]: vessel,
-        }));
-        setAisLastUpdate(vessel.timestamp || new Date().toISOString());
+          if (Array.isArray(data.vessels)) {
+            const mapObj = {};
+            data.vessels.forEach((v) => {
+              if (v && v.mmsi) mapObj[v.mmsi] = v;
+            });
+            setVesselsMap(mapObj);
+          }
 
-        // Append to tracks locally
-        setTracksMap((prev) => {
-          const existing = prev[vessel.mmsi] || [];
-          const newPoint = {
-            latitude: vessel.latitude,
-            longitude: vessel.longitude,
-            timestamp: vessel.timestamp,
-            speed_knots: vessel.speed_knots,
-            course_deg: vessel.course_deg,
-          };
-          const updated = [...existing.slice(-99), newPoint];
-          return {
+          if (data.tracks) {
+            setTracksMap(data.tracks);
+          }
+
+          if (Array.isArray(data.alerts)) {
+            setActiveAlerts(data.alerts);
+            if (onAlertsChange) onAlertsChange(data.alerts);
+          }
+        },
+        onDisconnected: () => {
+          if (!isMounted) return;
+          setAisStatus('DEMO_OFFLINE');
+        },
+      });
+    } else {
+      wsClient = connectAisWebSocket({
+        onInitialState: (data) => {
+          if (!isMounted) return;
+          if (data.status) setAisStatus(data.status);
+          if (data.timestamp) setAisLastUpdate(data.timestamp);
+
+          if (Array.isArray(data.vessels)) {
+            const mapObj = {};
+            data.vessels.forEach((v) => {
+              if (v && v.mmsi) mapObj[v.mmsi] = v;
+            });
+            setVesselsMap(mapObj);
+          }
+
+          if (Array.isArray(data.alerts)) {
+            setActiveAlerts(data.alerts);
+            if (onAlertsChange) onAlertsChange(data.alerts);
+          }
+        },
+        onStatusChange: (newStatus) => {
+          if (!isMounted) return;
+          setAisStatus(newStatus);
+        },
+        onVesselUpdate: (vessel) => {
+          if (!isMounted || !vessel || !vessel.mmsi) return;
+          setVesselsMap((prev) => ({
             ...prev,
-            [vessel.mmsi]: updated,
-          };
-        });
-      },
-      onProximityAlert: (alert) => {
-        if (!isMounted || !alert) return;
-        setActiveAlerts((prev) => {
-          const filtered = prev.filter(
-            (a) => !(a.vessel_mmsi === alert.vessel_mmsi && a.detection_id === alert.detection_id)
-          );
-          const updated = [...filtered, alert];
-          if (onAlertsChange) onAlertsChange(updated);
-          return updated;
-        });
-      },
-      onProximityClear: (alertId) => {
-        if (!isMounted || !alertId) return;
-        setActiveAlerts((prev) => {
-          const updated = prev.filter(
-            (a) => `${a.vessel_mmsi}_${a.detection_id}` !== alertId
-          );
-          if (onAlertsChange) onAlertsChange(updated);
-          return updated;
-        });
-      },
-      onDisconnected: () => {
-        if (!isMounted) return;
-        setAisStatus('CONNECTING');
-      },
-    });
+            [vessel.mmsi]: vessel,
+          }));
+          setAisLastUpdate(vessel.timestamp || new Date().toISOString());
 
-    // Background interval to refresh status & staleness
-    const interval = setInterval(fetchInitialData, 12000);
+          // Append to tracks locally
+          setTracksMap((prev) => {
+            const existing = prev[vessel.mmsi] || [];
+            const newPoint = {
+              latitude: vessel.latitude,
+              longitude: vessel.longitude,
+              timestamp: vessel.timestamp,
+              speed_knots: vessel.speed_knots,
+              course_deg: vessel.course_deg,
+            };
+            const updated = [...existing.slice(-99), newPoint];
+            return {
+              ...prev,
+              [vessel.mmsi]: updated,
+            };
+          });
+        },
+        onProximityAlert: (alert) => {
+          if (!isMounted || !alert) return;
+          setActiveAlerts((prev) => {
+            const filtered = prev.filter(
+              (a) => !(a.vessel_mmsi === alert.vessel_mmsi && a.detection_id === alert.detection_id)
+            );
+            const updated = [...filtered, alert];
+            if (onAlertsChange) onAlertsChange(updated);
+            return updated;
+          });
+        },
+        onProximityClear: (alertId) => {
+          if (!isMounted || !alertId) return;
+          setActiveAlerts((prev) => {
+            const updated = prev.filter(
+              (a) => `${a.vessel_mmsi}_${a.detection_id}` !== alertId
+            );
+            if (onAlertsChange) onAlertsChange(updated);
+            return updated;
+          });
+        },
+        onDisconnected: () => {
+          if (!isMounted) return;
+          setAisStatus('CONNECTING');
+        },
+      });
+    }
+
+    // Background interval to refresh status
+    const interval = setInterval(fetchInitialData, 10000);
 
     return () => {
       isMounted = false;
       clearInterval(interval);
-      wsClient.disconnect();
+      if (wsClient) wsClient.disconnect();
     };
-  }, []);
+  }, [aisMode]);
 
   // 7. Render Existing Debris Markers (Layer 1) and Dynamic Geofences (Layer 2) - STRICTLY PRESERVED
   useEffect(() => {
@@ -553,7 +636,7 @@ export function SonarMap({
     }
   }, [detections, severityFilter, showGeofences, enablePulsing]);
 
-  // 8. Render Live AIS Vessels (Layer 3) & Vessel Tracks (Layer 4)
+  // 8. Render AIS Vessels (Layer 3) & Vessel Tracks (Layer 4) with LIVE vs DEMO transparency
   useEffect(() => {
     if (!mapInstanceRef.current || !vesselsGroupRef.current || !tracksGroupRef.current) return;
 
@@ -562,6 +645,7 @@ export function SonarMap({
 
     if (!showLiveVessels) return;
 
+    const isDemo = aisMode === 'DEMO';
     const vesselList = Object.values(vesselsMap);
     const bounds = mapInstanceRef.current.getBounds();
     const visibleVessels = bounds && bounds.isValid()
@@ -580,7 +664,7 @@ export function SonarMap({
       if (showVesselTracks && tracksMap[v.mmsi] && tracksMap[v.mmsi].length > 1) {
         const latlngs = tracksMap[v.mmsi].map((pt) => [pt.latitude, pt.longitude]);
         const polyline = L.polyline(latlngs, {
-          color: isSelected ? '#38bdf8' : '#0284c7',
+          color: isDemo ? (isSelected ? '#fbbf24' : '#f59e0b') : (isSelected ? '#38bdf8' : '#0284c7'),
           weight: isSelected ? 3 : 2,
           opacity: isStale ? 0.4 : 0.75,
           dashArray: '4, 4',
@@ -593,12 +677,16 @@ export function SonarMap({
       const markerHtml = `
         <div class="relative flex flex-col items-center justify-center cursor-pointer group" style="opacity: ${isStale ? 0.6 : 1.0}">
           <!-- Vessel Name Tooltip on Hover -->
-          <div class="absolute -top-6 whitespace-nowrap bg-ocean-950/90 border border-cyan-500/50 text-cyan-300 px-1.5 py-0.2 rounded text-[9px] font-mono font-bold shadow-lg pointer-events-none">
-            ${shipName} ${speed !== 'N/A' ? `(${speed})` : ''}
+          <div class="absolute -top-6 whitespace-nowrap bg-ocean-950/90 border ${isDemo ? 'border-amber-500/70 text-amber-300' : 'border-cyan-500/50 text-cyan-300'} px-1.5 py-0.2 rounded text-[9px] font-mono font-bold shadow-lg pointer-events-none">
+            ${isDemo ? '<span class="text-amber-400 font-extrabold mr-1">[DEMO]</span>' : ''}${shipName} ${speed !== 'N/A' ? `(${speed})` : ''}
           </div>
 
           <!-- Vessel Icon with Heading Rotation -->
-          <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-600 to-blue-700 border-2 ${isSelected ? 'border-white scale-125' : 'border-cyan-300'} flex items-center justify-center shadow-xl shadow-cyan-500/30 text-white transition-transform duration-300">
+          <div class="w-8 h-8 rounded-lg ${
+            isDemo 
+              ? 'bg-gradient-to-br from-amber-600 to-yellow-700 border-2 ' + (isSelected ? 'border-white scale-125' : 'border-amber-300') + ' shadow-amber-500/40 text-black font-extrabold'
+              : 'bg-gradient-to-br from-cyan-600 to-blue-700 border-2 ' + (isSelected ? 'border-white scale-125' : 'border-cyan-300') + ' shadow-cyan-500/30 text-white'
+          } flex items-center justify-center shadow-xl transition-transform duration-300">
             <span style="display: inline-block; transform: rotate(${rotationDeg}deg); font-size: 14px;">🚢</span>
           </div>
 
@@ -608,7 +696,7 @@ export function SonarMap({
 
       const vesselIcon = L.divIcon({
         html: markerHtml,
-        className: 'custom-vessel-marker',
+        className: isDemo ? 'custom-demo-vessel-marker' : 'custom-vessel-marker',
         iconSize: [32, 32],
         iconAnchor: [16, 16],
         popupAnchor: [0, -18],
@@ -617,26 +705,34 @@ export function SonarMap({
       const marker = L.marker([v.latitude, v.longitude], { icon: vesselIcon });
 
       // Format Last Update
-      let updateTimeStr = 'Just now';
-      if (v.last_seen_seconds_ago > 0) {
+      let updateTimeStr = 'Recorded Telemetry';
+      if (!isDemo && v.last_seen_seconds_ago > 0) {
         if (v.last_seen_seconds_ago < 60) {
           updateTimeStr = `${Math.round(v.last_seen_seconds_ago)}s ago`;
         } else {
           updateTimeStr = `${Math.round(v.last_seen_seconds_ago / 60)}m ago`;
         }
+      } else if (v.timestamp) {
+        updateTimeStr = v.timestamp;
       }
 
-      // Popup Content with Real Fields Only
+      // Popup Content with Real Transparency
       const popupDiv = document.createElement('div');
-      popupDiv.className = 'p-3 font-mono text-xs text-slate-200 min-w-[260px] space-y-2';
+      popupDiv.className = 'p-3 font-mono text-xs text-slate-200 min-w-[270px] space-y-2';
       popupDiv.innerHTML = `
         <div class="flex items-center justify-between border-b border-ocean-800 pb-1.5">
           <div class="flex items-center space-x-1.5">
             <span class="text-base">🚢</span>
-            <strong class="text-sm font-bold text-cyan-300 uppercase">${v.ship_name || 'UNNAMED VESSEL'}</strong>
+            <strong class="text-sm font-bold ${isDemo ? 'text-amber-300' : 'text-cyan-300'} uppercase">
+              ${v.ship_name || 'UNNAMED VESSEL'}
+            </strong>
           </div>
-          <span class="px-2 py-0.5 rounded text-[10px] font-bold ${isStale ? 'bg-amber-950 text-amber-400 border border-amber-800' : 'bg-emerald-950 text-emerald-400 border border-emerald-800'}">
-            ${isStale ? 'STALE DATA' : 'LIVE AIS'}
+          <span class="px-2 py-0.5 rounded text-[10px] font-bold ${
+            isDemo
+              ? 'bg-amber-950 text-amber-400 border border-amber-600/70'
+              : (isStale ? 'bg-amber-950 text-amber-400 border border-amber-800' : 'bg-emerald-950 text-emerald-400 border border-emerald-800')
+          }">
+            ${isDemo ? 'DEMO MODE — RECORDED' : (isStale ? 'STALE DATA' : 'LIVE AIS')}
           </span>
         </div>
 
@@ -649,7 +745,7 @@ export function SonarMap({
           ${v.ship_type ? `<div class="flex justify-between"><span class="text-slate-400">Type:</span><span class="text-slate-200">${v.ship_type}</span></div>` : ''}
           <div class="flex justify-between">
             <span class="text-slate-400">Position:</span>
-            <span class="text-cyan-400 font-semibold">${v.latitude.toFixed(4)}°N, ${v.longitude.toFixed(4)}°E</span>
+            <span class="${isDemo ? 'text-amber-400' : 'text-cyan-400'} font-semibold">${v.latitude.toFixed(4)}°N, ${v.longitude.toFixed(4)}°E</span>
           </div>
           <div class="flex justify-between">
             <span class="text-slate-400">Speed (SOG):</span>
@@ -660,9 +756,20 @@ export function SonarMap({
           ${v.nav_status ? `<div class="flex justify-between"><span class="text-slate-400">Nav Status:</span><span class="text-slate-200">${v.nav_status}</span></div>` : ''}
           ${v.destination ? `<div class="flex justify-between"><span class="text-slate-400">Destination:</span><span class="text-slate-200">${v.destination}</span></div>` : ''}
           ${v.eta ? `<div class="flex justify-between"><span class="text-slate-400">ETA:</span><span class="text-slate-200">${v.eta}</span></div>` : ''}
-          <div class="flex justify-between border-t border-ocean-800/60 pt-1 text-[10px] text-slate-400">
-            <span>Last AIS Report:</span>
-            <span class="text-slate-300 font-semibold">${updateTimeStr}</span>
+          
+          <div class="border-t border-ocean-800/60 pt-1 text-[10px] space-y-0.5">
+            <div class="flex justify-between text-slate-400">
+              <span>Data Source:</span>
+              <span class="font-semibold text-slate-200">${isDemo ? 'AISStream recorded data' : 'Real-time AISStream'}</span>
+            </div>
+            <div class="flex justify-between text-slate-400">
+              <span>Operational Mode:</span>
+              <span class="font-bold ${isDemo ? 'text-amber-400' : 'text-emerald-400'}">${isDemo ? 'DEMO (Offline Replay)' : 'LIVE STREAM'}</span>
+            </div>
+            <div class="flex justify-between text-slate-400">
+              <span>Timestamp:</span>
+              <span class="text-slate-300">${updateTimeStr}</span>
+            </div>
           </div>
         </div>
       `;
@@ -675,7 +782,7 @@ export function SonarMap({
 
       marker.addTo(vesselsGroupRef.current);
     });
-  }, [vesselsMap, tracksMap, showLiveVessels, showVesselTracks, selectedVesselMmsi, mapMoveTick]);
+  }, [vesselsMap, tracksMap, showLiveVessels, showVesselTracks, selectedVesselMmsi, aisMode, mapMoveTick]);
 
   // Center on selected target only on explicit selection change
   useEffect(() => {
@@ -747,13 +854,20 @@ export function SonarMap({
           })}
         </div>
 
-        {/* Live AIS Status Badge in Toolbar */}
+        {/* Live AIS or Demo Status Badge in Toolbar */}
         <div className="flex-shrink-0">
-          <AisStatusBadge
-            status={aisStatus}
-            vesselCount={Object.keys(vesselsMap).length}
-            lastUpdate={aisLastUpdate}
-          />
+          {aisMode === 'DEMO' ? (
+            <div className="flex items-center space-x-2 bg-amber-950/80 border border-amber-500/60 text-amber-300 px-2.5 py-1 rounded-lg text-xs font-mono font-bold shadow-sm">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              <span>AIS DEMO ({Object.keys(vesselsMap).length} Vessels)</span>
+            </div>
+          ) : (
+            <AisStatusBadge
+              status={aisStatus}
+              vesselCount={Object.keys(vesselsMap).length}
+              lastUpdate={aisLastUpdate}
+            />
+          )}
         </div>
 
         {/* Feature Toggles & Basemap Switcher */}

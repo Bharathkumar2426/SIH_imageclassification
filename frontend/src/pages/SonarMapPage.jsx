@@ -5,8 +5,13 @@ import {
 } from 'lucide-react';
 import { SonarMap } from '../components/SonarMap';
 import { VesselAlertsBanner } from '../components/VesselAlertsBanner';
+import { AisModeSelector } from '../components/AisModeSelector';
+import { AisDemoControls } from '../components/AisDemoControls';
 import { enrichGeospatial, getFleetGeospatial } from '../services/api';
-import { triggerTestAlert, clearTestAlerts } from '../services/aisApi';
+import { triggerTestAlert, clearTestAlerts, getAisStatus } from '../services/aisApi';
+import { 
+  playDemo, pauseDemo, resetDemo, setDemoSpeed, getDemoStatus 
+} from '../services/aisDemoApi';
 
 const SEVERITY_BADGES = {
   EXTREME: {
@@ -42,6 +47,107 @@ export function SonarMapPage({
   const [selectedDetectionId, setSelectedDetectionId] = useState(selectedTargetId || null);
   const [selectedVesselMmsi, setSelectedVesselMmsi] = useState(null);
   const [activeAlerts, setActiveAlerts] = useState([]);
+  const [aisMode, setAisMode] = useState('LIVE');
+  const [liveAisStatus, setLiveAisStatus] = useState('OFFLINE');
+  const [demoState, setDemoState] = useState({
+    running: true,
+    playback_speed: 1.0,
+    current_frame: 0,
+    total_frames: 30,
+    current_timestamp: null,
+  });
+
+  // Track live AISStream health status for transparency badge
+  useEffect(() => {
+    let isMounted = true;
+    const checkLiveAis = async () => {
+      try {
+        const s = await getAisStatus();
+        if (isMounted && s) {
+          setLiveAisStatus(s.status === 'RUNNING' || s.status === 'CONNECTED' ? 'LIVE' : 'OFFLINE');
+        }
+      } catch (err) {
+        if (isMounted) setLiveAisStatus('OFFLINE');
+      }
+    };
+    checkLiveAis();
+    const interval = setInterval(checkLiveAis, 5000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Sync demo replay status when in DEMO mode
+  useEffect(() => {
+    if (aisMode !== 'DEMO') return;
+    let isMounted = true;
+    const fetchDemoStatus = async () => {
+      try {
+        const s = await getDemoStatus();
+        if (isMounted && s) {
+          setDemoState({
+            running: s.running ?? true,
+            playback_speed: s.playback_speed ?? 1.0,
+            current_frame: s.current_frame ?? 0,
+            total_frames: s.total_frames ?? 30,
+            current_timestamp: s.current_timestamp ?? null,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to get demo status:', err);
+      }
+    };
+    fetchDemoStatus();
+    const interval = setInterval(fetchDemoStatus, 1000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [aisMode]);
+
+  // Demo playback control handlers
+  const handlePlayDemo = async () => {
+    try {
+      await playDemo();
+      setDemoState((prev) => ({ ...prev, running: true }));
+    } catch (err) {
+      console.error('Failed to play demo:', err);
+    }
+  };
+
+  const handlePauseDemo = async () => {
+    try {
+      await pauseDemo();
+      setDemoState((prev) => ({ ...prev, running: false }));
+    } catch (err) {
+      console.error('Failed to pause demo:', err);
+    }
+  };
+
+  const handleResetDemo = async () => {
+    try {
+      const res = await resetDemo();
+      if (res?.status) {
+        setDemoState((prev) => ({
+          ...prev,
+          current_frame: res.status.current_frame,
+          current_timestamp: res.status.current_timestamp,
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to reset demo:', err);
+    }
+  };
+
+  const handleSpeedChange = async (speed) => {
+    try {
+      await setDemoSpeed(speed);
+      setDemoState((prev) => ({ ...prev, playback_speed: speed }));
+    } catch (err) {
+      console.error('Failed to change demo speed:', err);
+    }
+  };
 
   // Sync selected detection
   useEffect(() => {
@@ -169,27 +275,36 @@ export function SonarMapPage({
               </h2>
               <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800/60 flex items-center space-x-1">
                 <Sparkles className="w-3 h-3" />
-                <span>Live AIS & Sonar Active</span>
+                <span>Sonar & Dynamic Geofencing</span>
               </span>
             </div>
             <p className="text-xs text-slate-400 font-mono">
-              Survey Area: Palk Strait (9.3142°N, 79.1821°E) • Altitude: 28m AGL • Zoom: Whole World (minZoom 2) to Subsea Detail
+              Survey Area: Palk Strait (9.3142°N, 79.1821°E) • Altitude: 28m AGL • Zoom: Whole World to Subsea Detail
             </p>
           </div>
         </div>
 
-        {/* View Mode Switcher, SOS Simulator, and Return button */}
-        <div className="flex items-center space-x-3">
-          {/* Test SOS Alert Trigger Button */}
-          <button
-            onClick={handleTriggerTestSOS}
-            disabled={isTriggeringTest}
-            title="Simulate a live vessel breaching a debris safety geofence to verify real-time SOS collision alerts"
-            className="px-3 py-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 hover:text-white border border-rose-600/70 text-xs font-mono font-bold flex items-center space-x-1.5 transition shadow-md shadow-rose-950/50 active:scale-95"
-          >
-            <ShieldAlert className="w-4 h-4 text-rose-400 animate-pulse" />
-            <span>{isTriggeringTest ? 'Triggering...' : '🚨 Test SOS Breach'}</span>
-          </button>
+        {/* View Mode Switcher, AIS Mode Selector, SOS Simulator, and Return button */}
+        <div className="flex flex-wrap items-center gap-3">
+          {/* AIS LIVE / DEMO Mode Selector */}
+          <AisModeSelector
+            mode={aisMode}
+            liveStatus={liveAisStatus}
+            onModeChange={(newMode) => setAisMode(newMode)}
+          />
+
+          {/* Test SOS Alert Trigger Button (for Live mode demo) */}
+          {aisMode === 'LIVE' && (
+            <button
+              onClick={handleTriggerTestSOS}
+              disabled={isTriggeringTest}
+              title="Simulate a live vessel breaching a debris safety geofence to verify real-time SOS collision alerts"
+              className="px-3 py-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 hover:text-white border border-rose-600/70 text-xs font-mono font-bold flex items-center space-x-1.5 transition shadow-md shadow-rose-950/50 active:scale-95"
+            >
+              <ShieldAlert className="w-4 h-4 text-rose-400 animate-pulse" />
+              <span>{isTriggeringTest ? 'Triggering...' : '🚨 Test SOS Breach'}</span>
+            </button>
+          )}
 
           {/* Mode Switcher */}
           <div className="flex items-center space-x-1 bg-ocean-950/80 p-1 rounded-lg border border-ocean-800 text-xs font-mono">
@@ -202,7 +317,7 @@ export function SonarMapPage({
                     : 'text-slate-300 hover:text-white hover:bg-ocean-850'
                 }`}
               >
-                📍 Current Upload ({detectionResult.detections.length})
+                📍 Current ({detectionResult.detections.length})
               </button>
             )}
             <button
@@ -213,7 +328,7 @@ export function SonarMapPage({
                   : 'text-slate-300 hover:text-white hover:bg-ocean-850'
               }`}
             >
-              🌐 All Historical Runs
+              🌐 All Runs
             </button>
           </div>
 
@@ -226,6 +341,21 @@ export function SonarMapPage({
           </button>
         </div>
       </div>
+
+      {/* AIS Demo Replay Controls Bar (visible when DEMO mode is selected) */}
+      {aisMode === 'DEMO' && (
+        <AisDemoControls
+          isRunning={demoState.running}
+          playbackSpeed={demoState.playback_speed}
+          currentFrame={demoState.current_frame}
+          totalFrames={demoState.total_frames}
+          frameTimestamp={demoState.current_timestamp}
+          onPlay={handlePlayDemo}
+          onPause={handlePauseDemo}
+          onReset={handleResetDemo}
+          onSpeedChange={handleSpeedChange}
+        />
+      )}
 
       {/* Dynamic Proximity Alerts Banner */}
       {activeAlerts.length > 0 && (
@@ -252,6 +382,7 @@ export function SonarMapPage({
             geospatialData={geospatialData}
             selectedTargetId={selectedDetectionId}
             selectedVesselMmsi={selectedVesselMmsi}
+            aisMode={aisMode}
             onSelectTarget={handleTargetClick}
             onSelectVessel={setSelectedVesselMmsi}
             onSwitchToAnalysis={onSwitchToAnalysis}

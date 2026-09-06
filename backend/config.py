@@ -42,6 +42,14 @@ class Settings:
     # CORS
     CORS_ORIGINS: list[str] = ["*"]
 
+    # Maritime Incident Intelligence Configuration (SIH 26057)
+    NEWS_API_KEY: str = os.getenv("NEWS_API_KEY", "")
+    MEDIASTACK_API_KEY: str = os.getenv("MEDIASTACK_API_KEY", "")
+    GLOBAL_FISHING_WATCH_API_TOKEN: str = os.getenv("GLOBAL_FISHING_WATCH_API_TOKEN", "")
+    INCIDENT_CACHE_DIR: Path = BASE_DIR / "backend" / "data" / "incident_cache"
+    INCIDENTS_DB_PATH: Path = BASE_DIR / "maritime_incidents.db"
+    INCIDENT_POLL_INTERVAL_SECONDS: int = int(os.getenv("INCIDENT_POLL_INTERVAL_SECONDS", "300"))
+
 settings = Settings()
 
 # Ensure critical directories exist
@@ -49,3 +57,4 @@ settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 settings.SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
 settings.WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
 settings.DATASET_DIR.mkdir(parents=True, exist_ok=True)
+settings.INCIDENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
