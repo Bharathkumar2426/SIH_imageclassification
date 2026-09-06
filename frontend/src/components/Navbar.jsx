@@ -59,6 +59,16 @@ export function Navbar({ healthData, isDetecting, activeTab = 'analysis', onTabC
                 </span>
               )}
             </button>
+            <button
+              onClick={() => onTabChange('incidents')}
+              className={`px-3.5 py-1.5 rounded-lg font-bold transition flex items-center space-x-2 ${
+                activeTab === 'incidents'
+                  ? 'bg-gradient-to-r from-rose-500 to-amber-500 text-black shadow-md shadow-rose-500/20 font-extrabold'
+                  : 'text-slate-300 hover:text-white hover:bg-ocean-850'
+              }`}
+            >
+              <span>🚨 Maritime Incidents</span>
+            </button>
           </div>
         )}
 

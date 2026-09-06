@@ -51,7 +51,7 @@ def test_endpoints():
     print("Reset:", r.status_code, r.json())
     assert r.status_code == 200
 
-    print("\n✅ ALL LIVE & DEMO AIS ENDPOINT TESTS PASSED PERFECTLY!")
+    print("\n[SUCCESS] ALL LIVE & DEMO AIS ENDPOINT TESTS PASSED PERFECTLY!")
 
 if __name__ == "__main__":
     test_endpoints()

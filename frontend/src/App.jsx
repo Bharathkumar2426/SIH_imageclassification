@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
 import { SonarAnalysisPage } from './pages/SonarAnalysisPage';
 import { SonarMapPage } from './pages/SonarMapPage';
+import { MaritimeIncidentPage } from './pages/MaritimeIncidentPage';
 import { getHealth } from './services/api';
 
 export default function App() {
@@ -50,12 +51,16 @@ export default function App() {
             setSelectedDetectionId={setSelectedTargetId}
             onViewOnMap={handleViewOnMap}
           />
-        ) : (
+        ) : activeTab === 'map' ? (
           <SonarMapPage
             detectionResult={detectionResult}
             selectedTargetId={selectedTargetId}
             onSelectTarget={setSelectedTargetId}
             onSwitchToAnalysis={() => setActiveTab('analysis')}
+          />
+        ) : (
+          <MaritimeIncidentPage 
+            onSwitchToSonar={() => setActiveTab('analysis')}
           />
         )}
       </main>

@@ -12,10 +12,12 @@ from backend.api.routes import router as api_router
 from backend.api.geospatial_routes import router as geospatial_router
 from backend.api.ais_routes import router as ais_router
 from backend.api.ais_demo_routes import router as ais_demo_router
+from backend.api.incident_routes import router as incident_router
 from backend.config import settings
 from backend.database import init_db
 from backend.services.ais_service import get_ais_service
 from backend.services.ais_demo_service import get_ais_demo_service
+from backend.services.incident_ingestion_service import get_incident_ingestion_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +28,7 @@ logger = logging.getLogger("MainApp")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initializes SQLite database schema and starts AIS services."""
+    """Initializes SQLite database schema and starts AIS and Incident services."""
     logger.info("Initializing SQLite database tables...")
     await init_db()
     logger.info("Database initialized successfully.")
@@ -38,12 +40,17 @@ async def lifespan(app: FastAPI):
     # Start independent demo replay service
     demo_svc = get_ais_demo_service()
     await demo_svc.start()
+
+    # Start AI maritime incident intelligence service
+    incident_svc = get_incident_ingestion_service()
+    await incident_svc.start()
     
     yield
     
     # Graceful shutdown of services
     await ais_svc.stop()
     await demo_svc.stop()
+    await incident_svc.stop()
     logger.info("Application shutting down.")
 
 
@@ -68,6 +75,7 @@ app.include_router(api_router, prefix=settings.API_PREFIX)
 app.include_router(geospatial_router, prefix=settings.API_PREFIX)
 app.include_router(ais_router, prefix=settings.API_PREFIX)
 app.include_router(ais_demo_router, prefix=settings.API_PREFIX)
+app.include_router(incident_router, prefix=settings.API_PREFIX)
 
 # Serve uploaded / processed static files if needed
 app.mount("/static/uploads", StaticFiles(directory=str(settings.UPLOAD_DIR)), name="uploads")
