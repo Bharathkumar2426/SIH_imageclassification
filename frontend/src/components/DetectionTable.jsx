@@ -24,6 +24,7 @@ export function DetectionTable({
   onSelectDetection,
   onHoverDetection,
   confidenceThreshold,
+  onViewOnMap,
 }) {
   if (detections.length === 0) {
     return (
@@ -50,9 +51,19 @@ export function DetectionTable({
             Detected Targets ({detections.length})
           </h3>
         </div>
-        <span className="text-[10px] font-mono text-slate-400">
-          Click row to highlight
-        </span>
+        <div className="flex items-center space-x-2">
+          {onViewOnMap && (
+            <button
+              onClick={() => onViewOnMap(selectedDetectionId || (detections[0] && detections[0].id))}
+              className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-950 text-emerald-400 border border-emerald-800/80 hover:bg-emerald-900 transition flex items-center space-x-1"
+            >
+              <span>🗺️ View on Map</span>
+            </button>
+          )}
+          <span className="text-[10px] font-mono text-slate-400">
+            Click row to highlight
+          </span>
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -64,6 +75,7 @@ export function DetectionTable({
               <th className="py-2.5 px-3 font-semibold text-right">Confidence</th>
               <th className="py-2.5 px-3 font-semibold text-right">Anomaly Score</th>
               <th className="py-2.5 px-3 font-semibold text-right">Source</th>
+              {onViewOnMap && <th className="py-2.5 px-2 font-semibold text-center w-12">Map</th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-ocean-800/40">
@@ -120,6 +132,20 @@ export function DetectionTable({
                       {sourceDisplay}
                     </span>
                   </td>
+                  {onViewOnMap && (
+                    <td className="py-2 px-2 text-center">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onViewOnMap(det.id);
+                        }}
+                        title="Locate target on geospatial map"
+                        className="px-1.5 py-0.5 rounded bg-ocean-850 hover:bg-emerald-950 hover:text-emerald-400 border border-ocean-700 text-[10px] text-slate-300 transition font-mono"
+                      >
+                        🗺️
+                      </button>
+                    </td>
+                  )}
                 </tr>
               );
             })}

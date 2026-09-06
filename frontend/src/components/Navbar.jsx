@@ -1,7 +1,7 @@
 import React from 'react';
 import { Anchor, Cpu, Database, Radio, ShieldCheck, Zap } from 'lucide-react';
 
-export function Navbar({ healthData, isDetecting }) {
+export function Navbar({ healthData, isDetecting, activeTab = 'analysis', onTabChange, detectionCount = 0 }) {
   const isOnline = healthData && healthData.status === 'ok';
   const isCuda = healthData?.cuda_available;
   const isSonarTrained = healthData?.is_sonar_trained;
@@ -28,6 +28,39 @@ export function Navbar({ healthData, isDetecting }) {
             </p>
           </div>
         </div>
+
+        {/* Center View Navigation Tabs */}
+        {onTabChange && (
+          <div className="flex items-center space-x-1.5 bg-ocean-950/80 p-1 rounded-xl border border-ocean-800 font-mono text-xs">
+            <button
+              onClick={() => onTabChange('analysis')}
+              className={`px-3.5 py-1.5 rounded-lg font-bold transition flex items-center space-x-2 ${
+                activeTab === 'analysis'
+                  ? 'bg-cyan-500 text-black shadow-md shadow-cyan-500/20'
+                  : 'text-slate-300 hover:text-white hover:bg-ocean-850'
+              }`}
+            >
+              <span>📊 Sonar Analysis</span>
+            </button>
+            <button
+              onClick={() => onTabChange('map')}
+              className={`px-3.5 py-1.5 rounded-lg font-bold transition flex items-center space-x-2 ${
+                activeTab === 'map'
+                  ? 'bg-emerald-500 text-black shadow-md shadow-emerald-500/20'
+                  : 'text-slate-300 hover:text-white hover:bg-ocean-850'
+              }`}
+            >
+              <span>🗺️ Geospatial Map</span>
+              {detectionCount > 0 && (
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                  activeTab === 'map' ? 'bg-black text-emerald-400' : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                }`}>
+                  {detectionCount}
+                </span>
+              )}
+            </button>
+          </div>
+        )}
 
         {/* System Diagnostics HUD */}
         <div className="hidden md:flex items-center space-x-4 text-xs font-mono">

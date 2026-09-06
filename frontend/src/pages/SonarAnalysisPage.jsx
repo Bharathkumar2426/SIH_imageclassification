@@ -9,15 +9,30 @@ import { ImageInfoCard } from '../components/ImageInfoCard';
 import { ActionCards } from '../components/ActionCards';
 import { detectSonarImage } from '../services/api';
 
-export function SonarAnalysisPage({ healthData }) {
+export function SonarAnalysisPage({ 
+  healthData, 
+  detectionResult: externalDetectionResult,
+  setDetectionResult: setExternalDetectionResult,
+  selectedDetectionId: externalSelectedId,
+  setSelectedDetectionId: setExternalSelectedId,
+  onViewOnMap,
+}) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [isDetecting, setIsDetecting] = useState(false);
-  const [detectionResult, setDetectionResult] = useState(null);
+  
+  const [internalDetectionResult, setInternalDetectionResult] = useState(null);
+  const detectionResult = externalDetectionResult !== undefined ? externalDetectionResult : internalDetectionResult;
+  const setDetectionResult = setExternalDetectionResult || setInternalDetectionResult;
+
   const [activeView, setActiveView] = useState('annotated');
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.20);
   const [iouThreshold, setIouThreshold] = useState(0.45);
   const [enablePreprocessing, setEnablePreprocessing] = useState(true);
-  const [selectedDetectionId, setSelectedDetectionId] = useState(null);
+
+  const [internalSelectedId, setInternalSelectedId] = useState(null);
+  const selectedDetectionId = externalSelectedId !== undefined ? externalSelectedId : internalSelectedId;
+  const setSelectedDetectionId = setExternalSelectedId || setInternalSelectedId;
+
   const [hoveredDetectionId, setHoveredDetectionId] = useState(null);
   const [error, setError] = useState(null);
 
@@ -192,6 +207,7 @@ export function SonarAnalysisPage({ healthData }) {
                 onSelectDetection={setSelectedDetectionId}
                 onHoverDetection={setHoveredDetectionId}
                 confidenceThreshold={confidenceThreshold}
+                onViewOnMap={onViewOnMap}
               />
 
               <ImageInfoCard

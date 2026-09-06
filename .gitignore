@@ -10,6 +10,8 @@ ENV/
 *.egg-info/
 dist/
 build/
+scratch_*.py
+*.tmp
 
 # Frontend / Node
 frontend/node_modules/
@@ -34,3 +36,5 @@ Thumbs.db
 
 # Training logs / caches
 *.cache
+runs/
+.ruff_cache/

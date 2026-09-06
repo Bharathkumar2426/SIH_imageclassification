@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.routes import router as api_router
+from backend.api.geospatial_routes import router as geospatial_router
 from backend.config import settings
 from backend.database import init_db
 
@@ -45,8 +46,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register API Router
+# Register API Routers
 app.include_router(api_router, prefix=settings.API_PREFIX)
+app.include_router(geospatial_router, prefix=settings.API_PREFIX)
 
 # Serve uploaded / processed static files if needed
 app.mount("/static/uploads", StaticFiles(directory=str(settings.UPLOAD_DIR)), name="uploads")

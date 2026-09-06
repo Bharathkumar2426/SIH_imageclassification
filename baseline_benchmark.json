@@ -1,0 +1,226 @@
+{
+  "sample_sonar.png": {
+    "total_objects": 3,
+    "detections": [
+      {
+        "id": 1,
+        "class_name": "plastic_debris",
+        "confidence": 0.979,
+        "anomaly_score": 0.588,
+        "bbox": [
+          257,
+          494,
+          329,
+          522
+        ]
+      },
+      {
+        "id": 2,
+        "class_name": "metal_drum",
+        "confidence": 0.999,
+        "anomaly_score": 0.44,
+        "bbox": [
+          701,
+          60,
+          945,
+          93
+        ]
+      },
+      {
+        "id": 3,
+        "class_name": "metal_drum",
+        "confidence": 0.958,
+        "anomaly_score": 0.533,
+        "bbox": [
+          112,
+          637,
+          295,
+          667
+        ]
+      }
+    ]
+  },
+  "sample_sonar_image.jpg": {
+    "total_objects": 2,
+    "detections": [
+      {
+        "id": 1,
+        "class_name": "sunken_wreckage",
+        "confidence": 1.0,
+        "anomaly_score": 0.253,
+        "bbox": [
+          180,
+          131,
+          548,
+          329
+        ]
+      },
+      {
+        "id": 2,
+        "class_name": "sunken_wreckage",
+        "confidence": 0.867,
+        "anomaly_score": 0.631,
+        "bbox": [
+          556,
+          328,
+          799,
+          449
+        ]
+      }
+    ]
+  },
+  "sample_sonar_image6.jpg": {
+    "total_objects": 6,
+    "detections": [
+      {
+        "id": 1,
+        "class_name": "metal_drum",
+        "confidence": 0.912,
+        "anomaly_score": 0.08,
+        "bbox": [
+          80,
+          62,
+          158,
+          130
+        ]
+      },
+      {
+        "id": 2,
+        "class_name": "tire_wheel",
+        "confidence": 0.884,
+        "anomaly_score": 0.11,
+        "bbox": [
+          57,
+          204,
+          144,
+          276
+        ]
+      },
+      {
+        "id": 3,
+        "class_name": "ghost_net",
+        "confidence": 0.867,
+        "anomaly_score": 0.14,
+        "bbox": [
+          402,
+          73,
+          507,
+          149
+        ]
+      },
+      {
+        "id": 4,
+        "class_name": "plastic_debris",
+        "confidence": 0.831,
+        "anomaly_score": 0.19,
+        "bbox": [
+          230,
+          277,
+          304,
+          332
+        ]
+      },
+      {
+        "id": 5,
+        "class_name": "sunken_wreckage",
+        "confidence": 0.794,
+        "anomaly_score": 0.23,
+        "bbox": [
+          467,
+          195,
+          622,
+          297
+        ]
+      },
+      {
+        "id": 6,
+        "class_name": "unknown_debris",
+        "confidence": 0.621,
+        "anomaly_score": 0.71,
+        "bbox": [
+          470,
+          362,
+          617,
+          435
+        ]
+      }
+    ]
+  },
+  "sample_sonar_image6_clean.jpg": {
+    "total_objects": 6,
+    "detections": [
+      {
+        "id": 1,
+        "class_name": "metal_drum",
+        "confidence": 0.912,
+        "anomaly_score": 0.08,
+        "bbox": [
+          80,
+          62,
+          158,
+          130
+        ]
+      },
+      {
+        "id": 2,
+        "class_name": "tire_wheel",
+        "confidence": 0.884,
+        "anomaly_score": 0.11,
+        "bbox": [
+          57,
+          204,
+          144,
+          276
+        ]
+      },
+      {
+        "id": 3,
+        "class_name": "ghost_net",
+        "confidence": 0.867,
+        "anomaly_score": 0.14,
+        "bbox": [
+          402,
+          73,
+          507,
+          149
+        ]
+      },
+      {
+        "id": 4,
+        "class_name": "plastic_debris",
+        "confidence": 0.831,
+        "anomaly_score": 0.19,
+        "bbox": [
+          230,
+          277,
+          304,
+          332
+        ]
+      },
+      {
+        "id": 5,
+        "class_name": "sunken_wreckage",
+        "confidence": 0.794,
+        "anomaly_score": 0.23,
+        "bbox": [
+          467,
+          195,
+          622,
+          297
+        ]
+      },
+      {
+        "id": 6,
+        "class_name": "unknown_debris",
+        "confidence": 0.621,
+        "anomaly_score": 0.71,
+        "bbox": [
+          470,
+          362,
+          617,
+          435
+        ]
+      }
+    ]
+  }
+}
